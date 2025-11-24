@@ -1,0 +1,3 @@
+tests/fixtures/text_repo/a.txt:1:1: foo
+tests/fixtures/text_repo/b.txt:2:1: foo bar
+

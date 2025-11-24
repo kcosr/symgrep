@@ -1,0 +1,2 @@
+FILE LINE KIND NAME CONTEXT
+tests/fixtures/text_repo/a.txt 1 text foo foo

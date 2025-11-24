@@ -1,0 +1,5 @@
+foo
+foobar
+foo_bar
+bar_foo
+foo()

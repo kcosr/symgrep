@@ -1,0 +1,71 @@
+# Example `.symgrep/config.toml` covering all CLI options.
+#
+# Copy this file to `.symgrep/config.toml` in your project root and
+# customize values as needed.
+#
+# Most options are commented out so they serve as documentation without
+# changing behavior unless you explicitly enable them.
+
+[search]
+# CLI: symgrep search <pattern> [...]
+
+# Common SQLite index defaults for searches:
+paths = ["."]
+use_index = true           # equivalent to --use-index
+index_backend = "sqlite"   # file|sqlite
+index_path = ".symgrep/index.sqlite"
+
+# Additional optional defaults (uncomment to use):
+# globs = ["*.rs", "*.ts", "*.js"]
+# exclude = ["target", "node_modules"]
+# language = "typescript"
+# literal = false
+# mode = "symbol"            # text|symbol|auto
+# context = "parent"         # none|decl|def|parent
+# limit = 100
+# max_lines = 20
+# format = "json"            # text|table|json
+# server = "http://127.0.0.1:7878"
+# no_server = false
+
+[index]
+# CLI: symgrep index [...]
+
+# Common SQLite index defaults for indexing:
+paths = ["."]
+backend = "sqlite"
+index_path = ".symgrep/index.sqlite"
+
+# Additional optional defaults (uncomment to use):
+# globs = ["*.rs", "*.ts", "*.js"]
+# exclude = ["target", "node_modules"]
+# language = "typescript"
+# server = "http://127.0.0.1:7878"
+# no_server = false
+
+[index_info]
+# CLI: symgrep index-info [...]
+
+# Common SQLite index defaults for index-info:
+paths = ["."]
+backend = "sqlite"
+index_path = ".symgrep/index.sqlite"
+
+# Additional optional defaults (uncomment to use):
+# globs = ["*.rs", "*.ts", "*.js"]
+# exclude = ["target", "node_modules"]
+# language = "typescript"
+# format = "json"
+# server = "http://127.0.0.1:7878"
+# no_server = false
+
+[serve]
+# CLI: symgrep serve [...]
+
+# addr = "127.0.0.1:7878"
+
+[http]
+# Shared default server URL used when subcommand-level `server` is not set.
+
+# server_url = "http://127.0.0.1:7878"
+
