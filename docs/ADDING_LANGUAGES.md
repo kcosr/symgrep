@@ -29,7 +29,7 @@ The main components involved are:
 - `src/cli/*` and `src/server/*` – build `SearchConfig` from CLI/HTTP
   input and serialize `SearchResult` as JSON or text.
 
-Queries use a small fielded DSL (`text:`, `name:`, `kind:`, `language:`,
+Queries use a small fielded DSL (`content:`, `name:`, `kind:`, `language:`,
 `file:`). Language backends must respect the semantics of this DSL so
 that agents can reuse patterns across languages.
 
@@ -135,9 +135,9 @@ indexes, so the mapping must be stable.
 
 Language backends are also responsible for producing `ContextInfo`
 entries for symbols. The search engine requests context via the
-`SearchContext` enum (`none`, `decl`, `def`, `parent`), which is
-mapped to an internal `ContextKind` and passed to
-`LanguageBackend::get_context_snippet`.
+`ContextKind` enum (`decl`, `def`, `parent`), derived from the
+symbol views (`decl`/`def`/`parent`) in `SearchConfig.symbol_views`
+and passed to `LanguageBackend::get_context_snippet`.
 
 Recommended behavior:
 
@@ -222,7 +222,7 @@ Recommended steps:
     discovery works).
   - Symbol search:
     - `name:foo kind:function --language <lang>`.
-    - Context behavior with `--context decl|def|parent`.
+    - View behavior with `--view decl|def|parent`.
   - If appropriate, add the new language to any “mixed repo” tests
     that exercise cross-language patterns.
 

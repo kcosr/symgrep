@@ -24,6 +24,113 @@ fn copy_fixture_repo(name: &str) -> (tempfile::TempDir, PathBuf) {
 }
 
 #[test]
+fn cli_search_uses_project_config_default_view_for_symbol_mode() {
+    let (_tmp, repo_root) = copy_fixture_repo("cpp_repo");
+    let symgrep_dir = repo_root.join(".symgrep");
+    fs::create_dir_all(&symgrep_dir).expect("create .symgrep directory");
+
+    let config_toml = r#"
+[search]
+paths = ["."]
+language = "cpp"
+mode = "symbol"
+view = ["def", "matches"]
+"#;
+    fs::write(symgrep_dir.join("config.toml"), config_toml).expect("write config.toml");
+
+    let mut cmd = cargo_bin_cmd!("symgrep");
+    cmd.current_dir(&repo_root);
+    cmd.args([
+        "search",
+        "name:increment kind:method content:delta",
+        "--format",
+        "json",
+    ]);
+
+    let assert = cmd.assert().success();
+    let value: Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("valid json output");
+
+    let symbols = value["symbols"].as_array().expect("symbols array");
+    assert!(
+        !symbols.is_empty(),
+        "expected at least one symbol result in symbol mode"
+    );
+
+    let contexts = value["contexts"].as_array().expect("contexts array");
+    assert!(
+        !contexts.is_empty(),
+        "expected at least one context snippet when using def view"
+    );
+
+    for context in contexts {
+        assert_eq!(
+            context["kind"], "def",
+            "expected def context when config view includes def"
+        );
+    }
+
+    let has_matches = symbols.iter().any(|s| {
+        s["matches"]
+            .as_array()
+            .map(|arr| !arr.is_empty())
+            .unwrap_or(false)
+    });
+    assert!(
+        has_matches,
+        "expected per-symbol matches when config view includes matches"
+    );
+}
+
+#[test]
+fn cli_search_cli_view_overrides_project_config_view() {
+    let (_tmp, repo_root) = copy_fixture_repo("cpp_repo");
+    let symgrep_dir = repo_root.join(".symgrep");
+    fs::create_dir_all(&symgrep_dir).expect("create .symgrep directory");
+
+    let config_toml = r#"
+[search]
+paths = ["."]
+language = "cpp"
+mode = "symbol"
+view = ["def", "matches"]
+"#;
+    fs::write(symgrep_dir.join("config.toml"), config_toml).expect("write config.toml");
+
+    let mut cmd = cargo_bin_cmd!("symgrep");
+    cmd.current_dir(&repo_root);
+    cmd.args([
+        "search",
+        "name:increment kind:method content:delta",
+        "--mode",
+        "symbol",
+        "--language",
+        "cpp",
+        "--view",
+        "decl",
+        "--format",
+        "json",
+    ]);
+
+    let assert = cmd.assert().success();
+    let value: Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("valid json output");
+
+    let contexts = value["contexts"].as_array().expect("contexts array");
+    assert!(
+        !contexts.is_empty(),
+        "expected at least one context snippet when using symbol view"
+    );
+
+    for context in contexts {
+        assert_eq!(
+            context["kind"], "decl",
+            "expected CLI --view decl to override config def,matches"
+        );
+    }
+}
+
+#[test]
 fn cli_search_uses_project_config_defaults_for_paths_and_format() {
     let (_tmp, repo_root) = copy_fixture_repo("text_repo");
     let symgrep_dir = repo_root.join(".symgrep");

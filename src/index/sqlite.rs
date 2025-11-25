@@ -189,7 +189,7 @@ impl IndexBackend for SqliteIndexBackend {
         if map.is_empty() {
             let now = crate::index::current_epoch_seconds();
             return Ok(IndexMeta {
-                schema_version: "1".to_string(),
+                schema_version: "2".to_string(),
                 tool_version: env!("CARGO_PKG_VERSION").to_string(),
                 root_path: String::new(),
                 created_at: now,
@@ -202,9 +202,9 @@ impl IndexBackend for SqliteIndexBackend {
             .cloned()
             .unwrap_or_else(|| "1".to_string());
 
-        if schema_version != "1" {
+        if schema_version != "1" && schema_version != "2" {
             bail!(
-                "unsupported index schema version {}; expected 1",
+                "unsupported index schema version {}; expected 1 or 2",
                 schema_version
             );
         }
@@ -668,7 +668,7 @@ mod tests {
         {
             let mut backend = SqliteIndexBackend::open(&db_path).expect("backend");
             let mut meta = backend.load_meta().expect("load meta");
-            assert_eq!(meta.schema_version, "1");
+            assert_eq!(meta.schema_version, "2");
             meta.tool_version = "0.0.0-test".to_string();
             backend.save_meta(&meta).expect("save meta");
         }
@@ -676,7 +676,7 @@ mod tests {
         {
             let backend = SqliteIndexBackend::open(&db_path).expect("backend");
             let meta = backend.load_meta().expect("load meta");
-            assert_eq!(meta.schema_version, "1");
+            assert_eq!(meta.schema_version, "2");
             assert_eq!(meta.tool_version, "0.0.0-test");
         }
     }

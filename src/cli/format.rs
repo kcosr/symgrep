@@ -1,7 +1,9 @@
 use std::cmp;
+use std::collections::BTreeMap;
 
 use anyhow::Result;
 
+use crate::cli::args::{SearchArgs, SymbolViewArg};
 use crate::models::{ContextInfo, ContextNode, IndexSummary, SearchResult};
 
 /// Internal representation of a row rendered by the CLI.
@@ -21,29 +23,130 @@ struct DisplayRow {
 
 /// Render a `SearchResult` in human-readable text form.
 ///
-/// Symbol results are rendered as:
-/// `path:line:col: kind name`
-/// followed by indented snippet lines. Pure text results are
-/// rendered with a similar header:
-/// `path:line:col: text <pattern>`
-/// followed by the matching line as an indented snippet.
-pub fn print_text(result: &SearchResult) -> Result<()> {
-    let rows = build_rows(result);
+/// When symbol views are specified via `--view`, symbol-mode output
+/// is driven by those views (decl/def/parent/comment/matches).
+/// Otherwise, legacy context-based behavior is used.
+pub fn print_text(result: &SearchResult, args: &SearchArgs) -> Result<()> {
+    if !result.symbols.is_empty() && !args.view.is_empty() {
+        print_symbol_text_with_views(result, args)
+    } else if result.symbols.is_empty()
+        && args.context.unwrap_or(0) > 0
+        && matches!(args.format, crate::cli::args::OutputFormat::Text)
+    {
+        print_text_mode_with_context(result, args)
+    } else {
+        let rows = build_rows(result);
+        let max_lines = args.max_lines.unwrap_or(usize::MAX);
 
-    for row in rows {
-        let col_suffix = row.column.map(|c| format!(":{c}")).unwrap_or_default();
+        for row in rows {
+            let col_suffix = row.column.map(|c| format!(":{c}")).unwrap_or_default();
 
-        if row.is_symbol {
-            println!(
-                "{}:{}{}: {} {}",
-                row.file, row.line, col_suffix, row.kind, row.name
-            );
-            for snippet_line in row.snippet_lines {
-                println!("    {snippet_line}");
+            if row.is_symbol {
+                println!(
+                    "{}:{}{}: {} {}",
+                    row.file, row.line, col_suffix, row.kind, row.name
+                );
+                if max_lines > 0 {
+                    for snippet_line in row.snippet_lines.iter().take(max_lines) {
+                        println!("{snippet_line}");
+                    }
+                }
+            } else {
+                let snippet = row.snippet_lines.first().cloned().unwrap_or_default();
+                println!("{}:{}{}: {}", row.file, row.line, col_suffix, snippet);
             }
-        } else {
-            let snippet = row.snippet_lines.first().cloned().unwrap_or_default();
-            println!("{}:{}{}: {}", row.file, row.line, col_suffix, snippet);
+        }
+
+        Ok(())
+    }
+}
+
+fn print_text_mode_with_context(
+    result: &SearchResult,
+    args: &SearchArgs,
+) -> Result<()> {
+    if result.matches.is_empty() {
+        return Ok(());
+    }
+
+    let context = args.context.unwrap_or(0) as u32;
+    let max_lines_per_file = args.max_lines.unwrap_or(usize::MAX);
+
+    let mut matches_by_file: BTreeMap<String, Vec<u32>> = BTreeMap::new();
+    for m in &result.matches {
+        let path = m.path.display().to_string();
+        matches_by_file.entry(path).or_default().push(m.line);
+    }
+
+    let mut first_file = true;
+
+    for (file, lines) in matches_by_file {
+        let source = match std::fs::read_to_string(&file) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let all_lines: Vec<&str> = source.lines().collect();
+        if all_lines.is_empty() {
+            continue;
+        }
+
+        let mut windows: Vec<(u32, u32)> = Vec::new();
+        for line in lines {
+            let start = line.saturating_sub(context).max(1);
+            let end = (line + context).min(all_lines.len() as u32);
+            windows.push((start, end));
+        }
+
+        if windows.is_empty() {
+            continue;
+        }
+
+        windows.sort_by_key(|(start, _)| *start);
+        let mut merged: Vec<(u32, u32)> = Vec::new();
+        for (start, end) in windows {
+            if let Some(last) = merged.last_mut() {
+                if start <= last.1 + 1 {
+                    last.1 = last.1.max(end);
+                } else {
+                    merged.push((start, end));
+                }
+            } else {
+                merged.push((start, end));
+            }
+        }
+
+        if !first_file {
+            println!();
+        }
+        first_file = false;
+
+        println!("{file}");
+
+        if max_lines_per_file == 0 {
+            continue;
+        }
+
+        let mut printed = 0usize;
+
+        for (start, end) in merged {
+            for line_no in start..=end {
+                if printed >= max_lines_per_file {
+                    break;
+                }
+
+                let idx = (line_no - 1) as usize;
+                if idx >= all_lines.len() {
+                    break;
+                }
+
+                let text = all_lines[idx];
+                println!("{line_no}:  {text}");
+                printed += 1;
+            }
+
+            if printed >= max_lines_per_file {
+                break;
+            }
         }
     }
 
@@ -236,6 +339,196 @@ fn truncate(s: &str, max_width: usize) -> String {
             .collect::<String>()
             + "…"
     }
+}
+
+fn print_symbol_text_with_views(result: &SearchResult, args: &SearchArgs) -> Result<()> {
+    let show_comment = args
+        .view
+        .iter()
+        .any(|v| matches!(v, SymbolViewArg::Comment));
+    let show_matches = args
+        .view
+        .iter()
+        .any(|v| matches!(v, SymbolViewArg::Matches));
+    let has_region_view = args.view.iter().any(|v| {
+        matches!(
+            v,
+            SymbolViewArg::Decl | SymbolViewArg::Def | SymbolViewArg::Parent
+        )
+    });
+    let meta_only = args
+        .view
+        .iter()
+        .any(|v| matches!(v, SymbolViewArg::Meta))
+        && !has_region_view
+        && !show_comment
+        && !show_matches;
+    let show_context =
+        has_region_view || (!show_comment && !show_matches && !meta_only);
+    let max_lines = args.max_lines.unwrap_or(usize::MAX);
+    let context_lines = args.context.unwrap_or(0);
+
+    for (idx, symbol) in result.symbols.iter().enumerate() {
+        let file = symbol.file.display().to_string();
+        let line = symbol.range.start_line;
+        let col = Some(symbol.range.start_column);
+        let col_suffix = col.map(|c| format!(":{c}")).unwrap_or_default();
+        let kind = format!("{:?}", symbol.kind).to_lowercase();
+        let def_suffix = symbol
+            .def_line_count
+            .map(|n| format!(" (def: {n} lines)"))
+            .unwrap_or_default();
+
+        println!("{file}:{line}{col_suffix}: {kind} {}{def_suffix}", symbol.name);
+
+        if show_comment {
+            if let Some(attrs) = &symbol.attributes {
+                if let Some(range) = attrs.comment_range {
+                    if let Ok(source) = std::fs::read_to_string(&symbol.file) {
+                        let lines: Vec<&str> = source.lines().collect();
+                        if !lines.is_empty() {
+                            let start_idx =
+                                range.start_line.saturating_sub(1) as usize;
+                            let end_idx =
+                                range.end_line.saturating_sub(1) as usize;
+                            if start_idx < lines.len() && end_idx < lines.len() {
+                                for idx in start_idx..=end_idx {
+                                    println!("{}", lines[idx]);
+                                }
+                            }
+                        }
+                    }
+                } else if let Some(comment) = &attrs.comment {
+                    for line in comment.lines() {
+                        println!("{line}");
+                    }
+                }
+            }
+        }
+
+        let context = result
+            .contexts
+            .iter()
+            .find(|c| c.symbol_index == Some(idx));
+
+        if show_matches && context_lines > 0 {
+            if let Some(ctx) = context {
+                let snippet_lines: Vec<&str> = ctx.snippet.lines().collect();
+                if !snippet_lines.is_empty() && !symbol.matches.is_empty() {
+                    let base_line = ctx.range.start_line;
+                    let last_index = snippet_lines.len().saturating_sub(1);
+
+                    let mut windows: Vec<(usize, usize)> = Vec::new();
+                    for m in &symbol.matches {
+                        if m.line < base_line {
+                            continue;
+                        }
+                        let rel = (m.line - base_line) as usize;
+                        if rel > last_index {
+                            continue;
+                        }
+                        let start = rel.saturating_sub(context_lines);
+                        let end = cmp::min(rel + context_lines, last_index);
+                        windows.push((start, end));
+                    }
+
+                    if !windows.is_empty() {
+                        windows.sort_by_key(|(start, _)| *start);
+                        let mut merged: Vec<(usize, usize)> = Vec::new();
+                        for (start, end) in windows {
+                            if let Some(last) = merged.last_mut() {
+                                if start <= last.1 + 1 {
+                                    last.1 = last.1.max(end);
+                                } else {
+                                    merged.push((start, end));
+                                }
+                            } else {
+                                merged.push((start, end));
+                            }
+                        }
+
+                        let mut printed = 0usize;
+                        for (start, end) in merged {
+                            for rel in start..=end {
+                                if printed >= max_lines {
+                                    break;
+                                }
+
+                                let abs_line = base_line + rel as u32;
+                                let snippet_line = snippet_lines
+                                    .get(rel)
+                                    .copied()
+                                    .unwrap_or_default();
+                                println!("{abs_line}:  {snippet_line}");
+
+                                printed += 1;
+                            }
+
+                            if printed >= max_lines {
+                                break;
+                            }
+                        }
+                    } else {
+                        // No usable windows; fall back to legacy behavior.
+                        for (printed, m) in symbol.matches.iter().enumerate() {
+                            if printed >= max_lines {
+                                break;
+                            }
+                            println!("{}:  {}", m.line, m.snippet);
+                        }
+                    }
+                } else {
+                    // No matches but a primary context is available; fall back
+                    // to printing the context snippet, honoring max_lines.
+                    for (idx, snippet_line) in ctx.snippet.lines().enumerate() {
+                        if idx >= max_lines {
+                            break;
+                        }
+                        println!("{snippet_line}");
+                    }
+                }
+            } else if !symbol.matches.is_empty() {
+                // No primary context; fall back to legacy match-only behavior.
+                for (printed, m) in symbol.matches.iter().enumerate() {
+                    if printed >= max_lines {
+                        break;
+                    }
+                    println!("{}:  {}", m.line, m.snippet);
+                }
+            }
+        } else if show_matches {
+            if !symbol.matches.is_empty() {
+                for (printed, m) in symbol.matches.iter().enumerate() {
+                    if printed >= max_lines {
+                        break;
+                    }
+                    println!("{}:  {}", m.line, m.snippet);
+                }
+            } else if let Some(ctx) = context {
+                // Fallback: when no per-symbol matches are available,
+                // print the primary context snippet instead of leaving
+                // the body empty.
+                for (idx, snippet_line) in ctx.snippet.lines().enumerate() {
+                    if idx >= max_lines {
+                        break;
+                    }
+                    println!("{snippet_line}");
+                }
+            }
+        } else if show_context {
+            if let Some(ctx) = context {
+                for (idx, snippet_line) in ctx.snippet.lines().enumerate() {
+                    if idx >= max_lines {
+                        break;
+                    }
+                    println!("{snippet_line}");
+                }
+            }
+        }
+
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

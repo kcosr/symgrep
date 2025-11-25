@@ -4,7 +4,10 @@ use anyhow::{Context, Result};
 use reqwest::blocking::Client;
 use serde::Serialize;
 
-use crate::models::{IndexConfig, IndexSummary, SearchConfig, SearchResult};
+use crate::models::{
+    IndexConfig, IndexSummary, SearchConfig, SearchResult, SymbolAttributesRequest,
+    SymbolAttributesResponse,
+};
 
 /// HTTP client backend that delegates search and index operations to a
 /// running `symgrep` daemon.
@@ -44,6 +47,15 @@ impl HttpSearchBackend {
     /// deserialized `IndexSummary`.
     pub fn index_info(&self, config: IndexConfig) -> Result<IndexSummary> {
         self.post_json("/v1/index/info", &config)
+    }
+
+    /// Update attributes for a single symbol via
+    /// `POST /v1/symbol/attributes`, returning the updated symbol.
+    pub fn update_symbol_attributes(
+        &self,
+        request: SymbolAttributesRequest,
+    ) -> Result<SymbolAttributesResponse> {
+        self.post_json("/v1/symbol/attributes", &request)
     }
 
     fn post_json<T, R>(&self, path: &str, body: &T) -> Result<R>

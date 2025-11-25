@@ -1,6 +1,6 @@
 # symgrep
 
-Symsemantic code search CLI currently supporting TypeScript, JavaScript, and C++.
+Symsemantic code search CLI currently supporting TypeScript, JavaScript, C++, and Rust.
 
 `symgrep` combines fast text search with symbol-aware, AST-backed queries and
 LLM-friendly JSON output. It can run as a one-shot CLI, reuse on-disk indexes
@@ -9,12 +9,14 @@ for larger repos, or delegate work to a long‑lived HTTP daemon.
 ## Features
 
 - Text search (`--mode text`) with grep-like output.
-- Symbol/AST search (`--mode symbol` or `--mode auto`) across TS/JS/C++.
-- Configurable context:
-  - `--context=none` – metadata only.
-  - `--context=decl` – declaration/signature snippets.
-  - `--context=def` – full definition bodies.
-  - `--context=parent` – enclosing scopes (function, class, namespace, file).
+- Symbol/AST search (`--mode symbol` or `--mode auto`) across TS/JS/C++/Rust.
+- Configurable symbol views:
+  - `--view=meta` – symbol metadata only (no context snippets, no per-symbol matches).
+  - `--view=decl` – declaration/signature snippets.
+  - `--view=def` – full definition bodies.
+  - `--view=parent` – enclosing scopes (function, class, namespace, file).
+  - `--view=comment` – doc comments only.
+  - `--view=matches` – matching lines within the chosen region.
 - Multiple output formats:
   - `--format=text` – grep-style lines.
   - `--format=table` – compact, aligned table view.
@@ -107,7 +109,7 @@ The JSON schema (structure, fields, and versioning) is documented in
 symgrep --schema-version
 ```
 
-### 2. Symbol search with context
+### 2. Symbol search with views
 
 Run a symbol-mode search over a small mixed-language fixture repo, returning
 declaration snippets for each `add` function:
@@ -116,7 +118,7 @@ declaration snippets for each `add` function:
 symgrep search "name:add kind:function" \
   --path tests/fixtures/mixed_repo \
   --mode symbol \
-  --context decl \
+  --view decl \
   --format json
 ```
 
@@ -124,13 +126,35 @@ The pattern `"name:add kind:function"` uses a simple DSL supporting `name:`,
 `kind:`, and other filters. Symbol mode also accepts plain text patterns that
 match symbol names.
 
+To target a specific language, use either `--language` or a `language:`
+filter in the pattern. For example, to search Rust symbols in the small
+fixture repo:
+
+```bash
+symgrep search "name:increment kind:method language:rust" \
+  --path tests/fixtures/rust_repo \
+  --mode symbol \
+  --view parent \
+  --format json
+```
+
+This returns the Rust method `increment` with a `parent` context snippet
+covering its enclosing `impl` block and a `parent_chain` that includes the
+file, module, and struct. For Rust, symgrep classifies free functions
+(`fn foo(...)`) and associated functions in `impl` blocks that do not take
+`self` as `kind:function`, while inherent and trait methods that take any
+form of `self` are reported as `kind:method`.
+
 Key flags:
 
 - `--mode symbol` – use the symbol/AST engine instead of pure text.
-- `--context decl` – include a small declaration snippet per symbol.
-- `--context def` – expand to full function/class bodies.
-- `--context parent` – return the enclosing class/namespace/file with a
-  `parent_chain` describing nested scopes.
+- `--view meta|decl|def|parent|comment|matches` – control what is shown per symbol:
+  - `meta` – metadata only (no context snippets or match lines).
+  - `decl` – declaration/signature only.
+  - `def` – full definition/body.
+  - `parent` – enclosing scope with `parent_chain`.
+  - `comment` – doc comment only.
+  - `matches` – matching lines within the chosen region or attributes.
 
 Other useful flags for controlling result size:
 
@@ -143,10 +167,10 @@ Other useful flags for controlling result size:
 `symgrep search` accepts a small query DSL in the `pattern` string:
 
 - Fields:
-  - `text:` – content to search for (lines in text mode, snippets/bodies in symbol mode).
+  - `content:` – content to search for (lines in text mode, symbol surface/snippets in symbol mode).
   - `name:` – symbol name.
   - `kind:` – symbol kind (`function`, `method`, `class`, `interface`, `variable`, `namespace`).
-  - `language:` – language identifier (e.g. `typescript`, `javascript`, `cpp`).
+  - `language:` – language identifier (e.g. `typescript`, `javascript`, `cpp`, `rust`).
   - `file:` – file path substring.
 - AND / OR:
   - `A B` → `A AND B` (whitespace).
@@ -154,8 +178,8 @@ Other useful flags for controlling result size:
   - `field:x|y|z` → `field:x OR field:y OR field:z`
     (e.g. `kind:function|method`, `language:typescript|javascript`).
 - Bare patterns:
-  - If there is no `field:` at all, the pattern is treated as `text:...`:
-    - `foo` → `text:foo`, `foo|bar` → `text:foo OR text:bar`.
+  - If there is no `field:` at all, the pattern is treated as `content:...`:
+    - `foo` → `content:foo`, `foo|bar` → `content:foo OR content:bar`.
   - To filter by symbol name, prefer `name:` explicitly:
     - `name:add kind:function`.
 - Exact vs substring:
@@ -180,7 +204,7 @@ symgrep search "add" \
   --path tests/fixtures/ts_js_repo \
   --language typescript \
   --mode symbol \
-  --context decl \
+  --view decl \
   --format json \
   --use-index \
   --index-backend sqlite \
@@ -238,11 +262,12 @@ Example:
 paths = ["."]
 exclude = ["target", "node_modules"]
 mode = "symbol"            # text|symbol|auto
-context = "parent"         # none|decl|def|parent
+view = ["parent"]          # meta|decl|def|parent|comment|matches
 format = "json"            # text|table|json
 use_index = true           # equivalent to --use-index
 index_backend = "sqlite"   # file|sqlite
 index_path = ".symgrep/index.sqlite"
+# reindex_on_search = false   # when true, rebuild the index before each symbol search
 language = "typescript"
 
 [index]

@@ -7,7 +7,7 @@ The main entry point is `run_symgrep_search(config) -> dict`, where
 - `pattern` (str, required)
 - `paths` (str or sequence of str, optional; defaults to ["."])
 - `mode` ("text" | "symbol" | "auto", optional)
-- `context` ("none" | "decl" | "def" | "parent", optional)
+- `view` (sequence of "meta" | "decl" | "def" | "parent" | "comment" | "matches", optional)
 - `language` (str, optional)
 - `limit` (int, optional)
 - `max_lines` (int, optional)
@@ -19,6 +19,8 @@ The main entry point is `run_symgrep_search(config) -> dict`, where
 - `literal` (bool, optional; when true, enables whole-identifier
   matching in text mode and exact symbol-name matching in symbol
   mode)
+- `reindex_on_search` (bool, optional; when true, rebuilds or updates
+  the index before running symbol-mode searches that use an index)
 - `symgrep_bin` (str, optional; defaults to "symgrep")
 
 The function spawns `symgrep` as a subprocess with `--format json`
@@ -93,9 +95,13 @@ def run_symgrep_search(config: Mapping[str, Any]) -> Dict[str, Any]:
     if mode:
         args.extend(["--mode", str(mode)])
 
-    context = config.get("context")
-    if context:
-        args.extend(["--context", str(context)])
+    view = config.get("view")
+    if view:
+        # Accept a single string, a comma-separated string, or a
+        # sequence of view tokens and forward them to --view.
+        from_values = _as_strings(view)
+        for v in from_values:
+            args.extend(["--view", str(v)])
 
     language = config.get("language")
     if language:
@@ -125,6 +131,9 @@ def run_symgrep_search(config: Mapping[str, Any]) -> Dict[str, Any]:
         if index_path:
             args.extend(["--index-path", str(index_path)])
 
+    if bool(config.get("reindex_on_search")):
+        args.append("--reindex-on-search")
+
     args.extend(["--format", "json"])
 
     symgrep_bin = str(config.get("symgrep_bin", "symgrep"))
@@ -148,4 +157,3 @@ def run_symgrep_search(config: Mapping[str, Any]) -> Dict[str, Any]:
         return json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"failed to parse symgrep JSON: {exc}") from exc
-

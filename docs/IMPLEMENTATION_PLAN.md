@@ -321,8 +321,8 @@ and assumes the guardrails and scaffolding described here.
 
 ## 7. Initial Milestones Summary
 
-- **M1** – Basic CLI + text search (`v0.1.0`)
-- **M2** – TS/JS tree-sitter backend + symbol context (`v0.2.0`)
+- **M1** – Basic CLI + text search (`v0.1.x`)
+- **M2** – TS/JS tree-sitter backend + symbol context (`v0.3.0`)
 - **M3** – C++ backend (`v0.3.0`)
 - **M4** – Parent context + DSL (`v0.4.0`)
 - **M5** – Polished output + JSON schema docs (`v0.5.0`)

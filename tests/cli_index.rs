@@ -146,7 +146,7 @@ fn cli_index_builds_file_backend_layout() {
     let meta_file = fs::File::open(&meta_path).expect("open meta.json");
     let meta: Value = serde_json::from_reader(meta_file).expect("parse meta.json");
 
-    assert_eq!(meta["schema_version"], "1");
+    assert_eq!(meta["schema_version"], "2");
 }
 
 #[test]
@@ -180,7 +180,7 @@ fn cli_search_symbol_ts_with_index_matches_without_index() {
         "typescript",
         "--mode",
         "symbol",
-        "--context",
+        "--view",
         "decl",
         "--format",
         "json",
@@ -201,7 +201,7 @@ fn cli_search_symbol_ts_with_index_matches_without_index() {
         "typescript",
         "--mode",
         "symbol",
-        "--context",
+        "--view",
         "decl",
         "--format",
         "json",
@@ -244,7 +244,7 @@ fn cli_search_symbol_ts_with_sqlite_index_matches_without_index() {
         "typescript",
         "--mode",
         "symbol",
-        "--context",
+        "--view",
         "decl",
         "--format",
         "json",
@@ -266,7 +266,7 @@ fn cli_search_symbol_ts_with_sqlite_index_matches_without_index() {
         "typescript",
         "--mode",
         "symbol",
-        "--context",
+        "--view",
         "decl",
         "--format",
         "json",
@@ -291,6 +291,134 @@ fn cli_search_symbol_ts_with_sqlite_index_matches_without_index() {
 }
 
 #[test]
+fn cli_search_symbol_rust_with_index_matches_without_index() {
+    let (tmp, repo_root) = copy_fixture_repo("rust_repo");
+    let index_root = index_path_for(&tmp);
+
+    run_index(&repo_root, &index_root);
+
+    // Baseline search without index.
+    let mut base_cmd = cargo_bin_cmd!("symgrep");
+    base_cmd.args([
+        "search",
+        "add",
+        "--path",
+        repo_root.to_str().unwrap(),
+        "--language",
+        "rust",
+        "--mode",
+        "symbol",
+        "--view",
+        "decl",
+        "--format",
+        "json",
+    ]);
+
+    let base_assert = base_cmd.assert().success();
+    let mut base_value: Value =
+        serde_json::from_slice(&base_assert.get_output().stdout).expect("valid json output");
+
+    // Search using the file-based index.
+    let mut index_cmd = cargo_bin_cmd!("symgrep");
+    index_cmd.args([
+        "search",
+        "add",
+        "--path",
+        repo_root.to_str().unwrap(),
+        "--language",
+        "rust",
+        "--mode",
+        "symbol",
+        "--view",
+        "decl",
+        "--format",
+        "json",
+        "--use-index",
+        "--index-backend",
+        "file",
+        "--index-path",
+        index_root.to_str().unwrap(),
+    ]);
+
+    let index_assert = index_cmd.assert().success();
+    let mut index_value: Value =
+        serde_json::from_slice(&index_assert.get_output().stdout).expect("valid json output");
+
+    normalize_search_result(&mut base_value);
+    normalize_search_result(&mut index_value);
+
+    assert_eq!(
+        base_value, index_value,
+        "indexed Rust symbol search should match non-indexed search"
+    );
+}
+
+#[test]
+fn cli_search_symbol_rust_with_sqlite_index_matches_without_index() {
+    let (_tmp, repo_root) = copy_fixture_repo("rust_repo");
+    let db_path = repo_root.join(".symgrep").join("index.sqlite");
+
+    run_index_sqlite(&repo_root, &db_path);
+
+    // Baseline search without index.
+    let mut base_cmd = cargo_bin_cmd!("symgrep");
+    base_cmd.current_dir(&repo_root);
+    base_cmd.args([
+        "search",
+        "add",
+        "--path",
+        ".",
+        "--language",
+        "rust",
+        "--mode",
+        "symbol",
+        "--view",
+        "decl",
+        "--format",
+        "json",
+    ]);
+
+    let base_assert = base_cmd.assert().success();
+    let mut base_value: Value =
+        serde_json::from_slice(&base_assert.get_output().stdout).expect("valid json output");
+
+    // Search using the SQLite-based index.
+    let mut index_cmd = cargo_bin_cmd!("symgrep");
+    index_cmd.current_dir(&repo_root);
+    index_cmd.args([
+        "search",
+        "add",
+        "--path",
+        ".",
+        "--language",
+        "rust",
+        "--mode",
+        "symbol",
+        "--view",
+        "decl",
+        "--format",
+        "json",
+        "--use-index",
+        "--index-backend",
+        "sqlite",
+        "--index-path",
+        ".symgrep/index.sqlite",
+    ]);
+
+    let index_assert = index_cmd.assert().success();
+    let mut index_value: Value =
+        serde_json::from_slice(&index_assert.get_output().stdout).expect("valid json output");
+
+    normalize_search_result(&mut base_value);
+    normalize_search_result(&mut index_value);
+
+    assert_eq!(
+        base_value, index_value,
+        "SQLite indexed Rust symbol search should match non-indexed search"
+    );
+}
+
+#[test]
 fn cli_search_symbol_cpp_with_index_matches_without_index() {
     let (tmp, repo_root) = copy_fixture_repo("cpp_repo");
     let index_root = index_path_for(&tmp);
@@ -308,7 +436,7 @@ fn cli_search_symbol_cpp_with_index_matches_without_index() {
         "cpp",
         "--mode",
         "symbol",
-        "--context",
+        "--view",
         "decl",
         "--format",
         "json",
@@ -329,7 +457,7 @@ fn cli_search_symbol_cpp_with_index_matches_without_index() {
         "cpp",
         "--mode",
         "symbol",
-        "--context",
+        "--view",
         "decl",
         "--format",
         "json",
@@ -372,7 +500,7 @@ fn cli_search_symbol_cpp_with_sqlite_index_matches_without_index() {
         "cpp",
         "--mode",
         "symbol",
-        "--context",
+        "--view",
         "decl",
         "--format",
         "json",
@@ -394,7 +522,7 @@ fn cli_search_symbol_cpp_with_sqlite_index_matches_without_index() {
         "cpp",
         "--mode",
         "symbol",
-        "--context",
+        "--view",
         "decl",
         "--format",
         "json",
@@ -457,7 +585,7 @@ fn cli_search_symbol_ts_auto_prefers_existing_sqlite_index() {
         "typescript",
         "--mode",
         "symbol",
-        "--context",
+        "--view",
         "decl",
         "--format",
         "json",
@@ -480,7 +608,7 @@ fn cli_search_symbol_ts_auto_prefers_existing_sqlite_index() {
         "typescript",
         "--mode",
         "symbol",
-        "--context",
+        "--view",
         "decl",
         "--format",
         "json",
@@ -533,7 +661,7 @@ fn agent_guide_ts_symbol_search_with_explicit_sqlite_index_matches_snapshot() {
         "typescript",
         "--mode",
         "symbol",
-        "--context",
+        "--view",
         "decl",
         "--format",
         "json",
@@ -556,6 +684,134 @@ fn agent_guide_ts_symbol_search_with_explicit_sqlite_index_matches_snapshot() {
     normalize_search_result(&mut expected);
 
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn cli_annotate_updates_attributes_and_reindex_preserves_them() {
+    let (tmp, repo_root) = copy_fixture_repo("ts_js_repo");
+    let index_root = index_path_for(&tmp);
+
+    run_index(&repo_root, &index_root);
+
+    // Locate the symbol to annotate using the index-backed search.
+    let mut search_cmd = cargo_bin_cmd!("symgrep");
+    search_cmd.args([
+        "search",
+        "name:addWithDoc kind:function",
+        "--path",
+        repo_root.to_str().unwrap(),
+        "--language",
+        "typescript",
+        "--mode",
+        "symbol",
+        "--view",
+        "meta",
+        "--format",
+        "json",
+        "--use-index",
+        "--index-backend",
+        "file",
+        "--index-path",
+        index_root.to_str().unwrap(),
+    ]);
+
+    let search_assert = search_cmd.assert().success();
+    let search_value: Value =
+        serde_json::from_slice(&search_assert.get_output().stdout).expect("valid json output");
+
+    let symbols = search_value["symbols"].as_array().expect("symbols array");
+    let target = symbols
+        .iter()
+        .find(|s| s["name"] == "addWithDoc")
+        .expect("addWithDoc symbol");
+
+    let file = target["file"].as_str().expect("file string");
+    let start_line = target["range"]["start_line"]
+        .as_u64()
+        .expect("start_line");
+    let end_line = target["range"]["end_line"].as_u64().expect("end_line");
+
+    // Annotate the symbol with keywords and a description.
+    let mut annotate_cmd = cargo_bin_cmd!("symgrep");
+    annotate_cmd.args([
+        "annotate",
+        "--file",
+        file,
+        "--language",
+        "typescript",
+        "--kind",
+        "function",
+        "--name",
+        "addWithDoc",
+        "--start-line",
+        &start_line.to_string(),
+        "--end-line",
+        &end_line.to_string(),
+        "--keywords",
+        "auth,login,jwt",
+        "--description",
+        "Performs user authentication and issues JWTs",
+        "--index-backend",
+        "file",
+        "--index-path",
+        index_root.to_str().unwrap(),
+    ]);
+
+    let annotate_assert = annotate_cmd.assert().success();
+    let annotate_value: Value =
+        serde_json::from_slice(&annotate_assert.get_output().stdout).expect("valid json output");
+
+    let attrs = &annotate_value["symbol"]["attributes"];
+    assert_eq!(
+        attrs["keywords"],
+        serde_json::json!(["auth", "login", "jwt"])
+    );
+    assert_eq!(
+        attrs["description"],
+        serde_json::json!("Performs user authentication and issues JWTs")
+    );
+
+    // Re-run indexing and ensure attributes are preserved.
+    run_index(&repo_root, &index_root);
+
+    let mut search_after_cmd = cargo_bin_cmd!("symgrep");
+    search_after_cmd.args([
+        "search",
+        "name:addWithDoc kind:function",
+        "--path",
+        repo_root.to_str().unwrap(),
+        "--language",
+        "typescript",
+        "--mode",
+        "symbol",
+        "--view",
+        "meta",
+        "--format",
+        "json",
+        "--use-index",
+        "--index-backend",
+        "file",
+        "--index-path",
+        index_root.to_str().unwrap(),
+    ]);
+
+    let search_after_assert = search_after_cmd.assert().success();
+    let search_after_value: Value = serde_json::from_slice(
+        &search_after_assert.get_output().stdout,
+    )
+    .expect("valid json output");
+
+    let symbols_after = search_after_value["symbols"]
+        .as_array()
+        .expect("symbols array");
+    let target_after = symbols_after
+        .iter()
+        .find(|s| s["name"] == "addWithDoc")
+        .expect("addWithDoc symbol");
+
+    let attrs_after = &target_after["attributes"];
+    assert_eq!(attrs_after["keywords"], attrs["keywords"]);
+    assert_eq!(attrs_after["description"], attrs["description"]);
 }
 
 #[test]

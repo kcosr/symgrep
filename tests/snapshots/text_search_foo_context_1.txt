@@ -1,0 +1,8 @@
+tests/fixtures/text_repo/a.txt
+1:  foo
+2:  bar
+
+tests/fixtures/text_repo/b.txt
+1:  baz
+2:  foo bar
+3:  

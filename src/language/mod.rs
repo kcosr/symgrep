@@ -18,6 +18,7 @@ use crate::models::{ContextInfo, ContextKind, Symbol, TextRange};
 
 mod cpp;
 mod javascript;
+mod rust;
 mod typescript;
 
 /// Minimal error type for language backends.
@@ -201,6 +202,168 @@ pub(crate) fn context_snippet_for_range(
     }
 }
 
+/// Internal classification of a single line when collecting leading
+/// comments for a symbol.
+enum CommentLineKind {
+    /// Actual content line within a comment block.
+    Content(String),
+    /// Comment delimiter or decorative line (e.g. `/**`, `*/`, `*`).
+    Delimiter,
+    /// Non-comment line.
+    NotComment,
+}
+
+fn classify_comment_line(line: &str) -> CommentLineKind {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return CommentLineKind::NotComment;
+    }
+
+    if trimmed.starts_with("//") {
+        let body = trimmed.trim_start_matches('/').trim_start_matches('/').trim();
+        if body.is_empty() {
+            CommentLineKind::Delimiter
+        } else {
+            CommentLineKind::Content(body.to_string())
+        }
+    } else if trimmed.starts_with("/*") {
+        let mut body = trimmed.trim_start_matches("/*").trim_start_matches('*').trim();
+        if body.ends_with("*/") {
+            body = body.trim_end_matches("*/").trim();
+        }
+        if body.is_empty() {
+            CommentLineKind::Delimiter
+        } else {
+            CommentLineKind::Content(body.to_string())
+        }
+    } else if trimmed.starts_with('*') {
+        let body = trimmed.trim_start_matches('*').trim();
+        if body.is_empty() {
+            CommentLineKind::Delimiter
+        } else {
+            CommentLineKind::Content(body.to_string())
+        }
+    } else {
+        CommentLineKind::NotComment
+    }
+}
+
+/// Collect leading comment lines immediately preceding a symbol,
+/// returning both normalized text and the original source range.
+///
+/// This walks upward from `start_line - 1`, skipping over decorator
+/// or attribute lines as defined by `is_decorator_line`, and
+/// aggregating contiguous comment lines. The walk stops on the first
+/// blank line or non-comment, non-decorator line.
+///
+/// The returned `TextRange` covers the full comment block in the
+/// original source (including delimiters and indentation), while the
+/// normalized text strips comment delimiters for use in queries and
+/// JSON APIs.
+pub(crate) fn collect_leading_comment<F>(
+    source: &str,
+    start_line: u32,
+    is_decorator_line: F,
+) -> Option<(String, TextRange)>
+where
+    F: Fn(&str) -> bool,
+{
+    if start_line <= 1 {
+        return None;
+    }
+
+    let lines: Vec<&str> = source.lines().collect();
+    if lines.is_empty() {
+        return None;
+    }
+
+    let mut idx = start_line.saturating_sub(1) as usize;
+    if idx == 0 {
+        return None;
+    }
+    idx = idx.saturating_sub(1);
+
+    let mut collected: Vec<String> = Vec::new();
+    let mut saw_any = false;
+    let mut min_idx: Option<usize> = None;
+    let mut max_idx: Option<usize> = None;
+
+    loop {
+        if idx >= lines.len() {
+            break;
+        }
+
+        let line = lines[idx];
+        let trimmed = line.trim_end();
+
+        if trimmed.trim().is_empty() {
+            if saw_any {
+                break;
+            } else {
+                // Blank line immediately above the symbol with no
+                // comments/decorators – treat this as separating
+                // header comments from symbol comments.
+                break;
+            }
+        }
+
+        if is_decorator_line(trimmed) {
+            saw_any = true;
+            if idx == 0 {
+                break;
+            }
+            idx = idx.saturating_sub(1);
+            continue;
+        }
+
+        match classify_comment_line(trimmed) {
+            CommentLineKind::Content(text) => {
+                saw_any = true;
+                collected.push(text);
+                min_idx = Some(min_idx.map_or(idx, |current| current.min(idx)));
+                max_idx = Some(max_idx.map_or(idx, |current| current.max(idx)));
+                if idx == 0 {
+                    break;
+                }
+                idx = idx.saturating_sub(1);
+            }
+            CommentLineKind::Delimiter => {
+                saw_any = true;
+                min_idx = Some(min_idx.map_or(idx, |current| current.min(idx)));
+                max_idx = Some(max_idx.map_or(idx, |current| current.max(idx)));
+                if idx == 0 {
+                    break;
+                }
+                idx = idx.saturating_sub(1);
+            }
+            CommentLineKind::NotComment => break,
+        }
+    }
+
+    if collected.is_empty() {
+        None
+    } else {
+        collected.reverse();
+        let text = collected.join("\n");
+
+        let start_idx = min_idx.unwrap_or(0);
+        let end_idx = max_idx.unwrap_or(start_idx);
+        let start_line_range = start_idx as u32 + 1;
+        let end_line_range = end_idx as u32 + 1;
+        let end_text = lines.get(end_idx).copied().unwrap_or_default();
+        let end_column = end_text.len() as u32 + 1;
+
+        let range = TextRange {
+            start_line: start_line_range,
+            start_column: 1,
+            end_line: end_line_range,
+            end_column,
+        };
+
+        Some((text, range))
+    }
+}
+
 /// Helper to construct a basic context snippet for a symbol using its
 /// recorded `TextRange`.
 pub(crate) fn basic_context_snippet(
@@ -312,8 +475,12 @@ pub trait LanguageBackend: Sync + Send {
 ///
 /// This array is used by the registry helpers below; new language
 /// backends should be added here.
-static BACKENDS: [&'static dyn LanguageBackend; 3] =
-    [&typescript::BACKEND, &javascript::BACKEND, &cpp::BACKEND];
+static BACKENDS: [&'static dyn LanguageBackend; 4] = [
+    &typescript::BACKEND,
+    &javascript::BACKEND,
+    &cpp::BACKEND,
+    &rust::BACKEND,
+];
 
 /// Look up a backend by file path, using the extension to infer
 /// language.
@@ -343,6 +510,7 @@ pub fn backend_for_language(id: &str) -> Option<&'static dyn LanguageBackend> {
         "ts" | "tsx" => "typescript",
         "js" | "jsx" => "javascript",
         "cpp" | "c++" => "cpp",
+        "rs" => "rust",
         other => other,
     };
 
@@ -371,12 +539,25 @@ mod tests {
         (path, source)
     }
 
+    fn rust_fixture(name: &str) -> (PathBuf, String) {
+        let path = PathBuf::from("tests/fixtures/rust_repo").join(name);
+        let source = fs::read_to_string(&path).expect("fixture source");
+        (path, source)
+    }
+
+    fn call_fixture(name: &str) -> (PathBuf, String) {
+        let path = PathBuf::from("tests/fixtures/call_graph_repo").join(name);
+        let source = fs::read_to_string(&path).expect("fixture source");
+        (path, source)
+    }
+
     #[test]
     fn registry_maps_extensions_to_backends() {
         let ts_path = Path::new("src/lib.ts");
         let tsx_path = Path::new("src/component.tsx");
         let js_path = Path::new("src/index.js");
         let jsx_path = Path::new("src/app.jsx");
+        let rs_path = Path::new("src/lib.rs");
         let cpp_path = Path::new("src/main.cpp");
         let cc_path = Path::new("src/main.cc");
         let cxx_path = Path::new("src/main.cxx");
@@ -388,6 +569,7 @@ mod tests {
         assert_eq!(backend_for_path(tsx_path).unwrap().id(), "typescript");
         assert_eq!(backend_for_path(js_path).unwrap().id(), "javascript");
         assert_eq!(backend_for_path(jsx_path).unwrap().id(), "javascript");
+        assert_eq!(backend_for_path(rs_path).unwrap().id(), "rust");
         assert_eq!(backend_for_path(cpp_path).unwrap().id(), "cpp");
         assert_eq!(backend_for_path(cc_path).unwrap().id(), "cpp");
         assert_eq!(backend_for_path(cxx_path).unwrap().id(), "cpp");
@@ -414,6 +596,9 @@ mod tests {
 
         assert_eq!(backend_for_language("cpp").unwrap().id(), "cpp");
         assert_eq!(backend_for_language("c++").unwrap().id(), "cpp");
+
+        assert_eq!(backend_for_language("rust").unwrap().id(), "rust");
+        assert_eq!(backend_for_language("rs").unwrap().id(), "rust");
     }
 
     #[test]
@@ -549,6 +734,17 @@ mod tests {
     }
 
     #[test]
+    fn rust_backend_parses_fixture() {
+        let (path, source) = rust_fixture("lib.rs");
+        let backend = backend_for_language("rust").unwrap();
+        let parsed = backend.parse_file(&path, &source).expect("parsed");
+
+        assert_eq!(parsed.language_id, "rust");
+        assert!(!parsed.has_errors());
+        assert!(!parsed.root_kind().is_empty());
+    }
+
+    #[test]
     fn typescript_backend_indexes_basic_symbols() {
         let (path, source) = fixture("simple.ts");
         let backend = backend_for_language("typescript").unwrap();
@@ -574,6 +770,35 @@ mod tests {
             .iter()
             .any(|s| s.name == "add" && s.kind == SymbolKind::Function));
         assert!(symbols.iter().all(|s| s.language == "javascript"));
+    }
+
+    #[test]
+    fn rust_backend_indexes_basic_symbols() {
+        let (path, source) = rust_fixture("lib.rs");
+        let backend = backend_for_language("rust").unwrap();
+        let parsed = backend.parse_file(&path, &source).expect("parsed");
+
+        let symbols = backend.index_symbols(&parsed).expect("symbols");
+
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "add" && s.kind == SymbolKind::Function));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "new" && s.kind == SymbolKind::Function));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "increment" && s.kind == SymbolKind::Method));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "Widget" && s.kind == SymbolKind::Class));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "Greeter" && s.kind == SymbolKind::Interface));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "my_mod" && s.kind == SymbolKind::Namespace));
+        assert!(symbols.iter().all(|s| s.language == "rust"));
     }
 
     #[test]
@@ -711,5 +936,279 @@ mod tests {
 
         assert!(context.snippet.contains("struct Widget"));
         assert!(context.snippet.contains("int increment"));
+    }
+
+    #[test]
+    fn rust_backend_parent_context_builds_module_and_type_chain() {
+        let (path, source) = rust_fixture("lib.rs");
+        let backend = backend_for_language("rust").unwrap();
+        let parsed = backend.parse_file(&path, &source).expect("parsed");
+
+        let symbols = backend.index_symbols(&parsed).expect("symbols");
+        let symbol = symbols
+            .iter()
+            .find(|s| s.name == "increment" && s.kind == SymbolKind::Method)
+            .expect("increment symbol");
+
+        let context = backend
+            .get_context_snippet(&parsed, symbol, ContextKind::Parent)
+            .expect("parent context");
+
+        assert!(
+            context.parent_chain.len() >= 3,
+            "expected file, module and type in parent_chain"
+        );
+
+        let names: Vec<&str> = context
+            .parent_chain
+            .iter()
+            .map(|n| n.name.as_str())
+            .collect();
+
+        assert_eq!(names[0], "lib.rs");
+        assert!(
+            names.iter().any(|n| *n == "my_mod"),
+            "expected module 'my_mod' in parent_chain"
+        );
+        assert!(
+            names.iter().any(|n| *n == "Widget"),
+            "expected type 'Widget' in parent_chain"
+        );
+
+        assert!(context.snippet.contains("impl Widget"));
+        assert!(context.snippet.contains("fn increment"));
+    }
+
+    #[test]
+    fn typescript_backend_attaches_leading_doc_comment() {
+        let (path, source) = fixture("doc_comments.ts");
+        let backend = backend_for_language("typescript").unwrap();
+        let parsed = backend.parse_file(&path, &source).expect("parsed");
+
+        let symbols = backend.index_symbols(&parsed).expect("symbols");
+        let symbol = symbols
+            .iter()
+            .find(|s| s.name == "addWithDoc")
+            .expect("addWithDoc symbol");
+
+        let attrs = symbol.attributes.as_ref().expect("attributes");
+        let comment = attrs.comment.as_ref().expect("comment");
+        assert!(
+            comment.contains("Adds two numbers"),
+            "expected extracted comment to include doc text, got: {comment}"
+        );
+    }
+
+    #[test]
+    fn javascript_backend_attaches_leading_doc_comment() {
+        let (path, source) = fixture("doc_comments.js");
+        let backend = backend_for_language("javascript").unwrap();
+        let parsed = backend.parse_file(&path, &source).expect("parsed");
+
+        let symbols = backend.index_symbols(&parsed).expect("symbols");
+        let symbol = symbols
+            .iter()
+            .find(|s| s.name == "addWithDoc")
+            .expect("addWithDoc symbol");
+
+        let attrs = symbol.attributes.as_ref().expect("attributes");
+        let comment = attrs.comment.as_ref().expect("comment");
+        assert!(
+            comment.contains("Adds two numbers"),
+            "expected extracted comment to include doc text, got: {comment}"
+        );
+    }
+
+    #[test]
+    fn cpp_backend_attaches_leading_doc_comment() {
+        let (path, source) = cpp_fixture("doc_comments.cpp");
+        let backend = backend_for_language("cpp").unwrap();
+        let parsed = backend.parse_file(&path, &source).expect("parsed");
+
+        let symbols = backend.index_symbols(&parsed).expect("symbols");
+        let symbol = symbols
+            .iter()
+            .find(|s| s.name == "add_with_doc")
+            .expect("add_with_doc symbol");
+
+        let attrs = symbol.attributes.as_ref().expect("attributes");
+        let comment = attrs.comment.as_ref().expect("comment");
+        assert!(
+            comment.contains("Adds two integers"),
+            "expected extracted comment to include doc text, got: {comment}"
+        );
+    }
+
+    #[test]
+    fn rust_backend_attaches_leading_doc_comment() {
+        let (path, source) = rust_fixture("lib.rs");
+        let backend = backend_for_language("rust").unwrap();
+        let parsed = backend.parse_file(&path, &source).expect("parsed");
+
+        let symbols = backend.index_symbols(&parsed).expect("symbols");
+        let symbol = symbols
+            .iter()
+            .find(|s| s.name == "add_with_doc")
+            .expect("add_with_doc symbol");
+
+        let attrs = symbol.attributes.as_ref().expect("attributes");
+        let comment = attrs.comment.as_ref().expect("comment");
+        assert!(
+            comment.contains("Adds two integers"),
+            "expected extracted comment to include doc text, got: {comment}"
+        );
+    }
+
+    #[test]
+    fn typescript_backend_populates_call_relationships() {
+        let (path, source) = call_fixture("ts_calls.ts");
+        let backend = backend_for_language("typescript").unwrap();
+        let parsed = backend.parse_file(&path, &source).expect("parsed");
+
+        let symbols = backend.index_symbols(&parsed).expect("symbols");
+
+        let foo = symbols
+            .iter()
+            .find(|s| s.name == "foo" && s.kind == SymbolKind::Function)
+            .expect("foo symbol");
+        let qux = symbols
+            .iter()
+            .find(|s| s.name == "qux" && s.kind == SymbolKind::Function)
+            .expect("qux symbol");
+        let bar = symbols
+            .iter()
+            .find(|s| s.name == "bar" && s.kind == SymbolKind::Function)
+            .expect("bar symbol");
+        let baz = symbols
+            .iter()
+            .find(|s| s.name == "baz" && s.kind == SymbolKind::Function)
+            .expect("baz symbol");
+
+        let foo_calls: Vec<&str> = foo.calls.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            foo_calls.contains(&"bar") && foo_calls.contains(&"baz"),
+            "expected foo to call bar and baz"
+        );
+
+        let bar_callers: Vec<&str> = bar.called_by.iter().map(|c| c.name.as_str()).collect();
+        let baz_callers: Vec<&str> = baz.called_by.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            bar_callers.contains(&"foo") && baz_callers.contains(&"foo"),
+            "expected bar and baz to be called by foo"
+        );
+
+        let qux_calls: Vec<&str> = qux.calls.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            qux_calls.contains(&"foo"),
+            "expected qux to call foo"
+        );
+
+        let foo_callers: Vec<&str> = foo.called_by.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            foo_callers.contains(&"qux"),
+            "expected foo to be called by qux"
+        );
+    }
+
+    #[test]
+    fn javascript_backend_populates_call_relationships() {
+        let (path, source) = call_fixture("js_calls.js");
+        let backend = backend_for_language("javascript").unwrap();
+        let parsed = backend.parse_file(&path, &source).expect("parsed");
+
+        let symbols = backend.index_symbols(&parsed).expect("symbols");
+
+        let foo = symbols
+            .iter()
+            .find(|s| s.name == "foo" && s.kind == SymbolKind::Function)
+            .expect("foo symbol");
+        let qux = symbols
+            .iter()
+            .find(|s| s.name == "qux" && s.kind == SymbolKind::Function)
+            .expect("qux symbol");
+        let bar = symbols
+            .iter()
+            .find(|s| s.name == "bar" && s.kind == SymbolKind::Function)
+            .expect("bar symbol");
+        let baz = symbols
+            .iter()
+            .find(|s| s.name == "baz" && s.kind == SymbolKind::Function)
+            .expect("baz symbol");
+
+        let foo_calls: Vec<&str> = foo.calls.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            foo_calls.contains(&"bar") && foo_calls.contains(&"baz"),
+            "expected foo to call bar and baz"
+        );
+
+        let bar_callers: Vec<&str> = bar.called_by.iter().map(|c| c.name.as_str()).collect();
+        let baz_callers: Vec<&str> = baz.called_by.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            bar_callers.contains(&"foo") && baz_callers.contains(&"foo"),
+            "expected bar and baz to be called by foo"
+        );
+
+        let qux_calls: Vec<&str> = qux.calls.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            qux_calls.contains(&"foo"),
+            "expected qux to call foo"
+        );
+
+        let foo_callers: Vec<&str> = foo.called_by.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            foo_callers.contains(&"qux"),
+            "expected foo to be called by qux"
+        );
+    }
+
+    #[test]
+    fn cpp_backend_populates_call_relationships() {
+        let (path, source) = call_fixture("cpp_calls.cpp");
+        let backend = backend_for_language("cpp").unwrap();
+        let parsed = backend.parse_file(&path, &source).expect("parsed");
+
+        let symbols = backend.index_symbols(&parsed).expect("symbols");
+
+        let foo = symbols
+            .iter()
+            .find(|s| s.name == "foo" && s.kind == SymbolKind::Function)
+            .expect("foo symbol");
+        let qux = symbols
+            .iter()
+            .find(|s| s.name == "qux" && s.kind == SymbolKind::Function)
+            .expect("qux symbol");
+        let bar = symbols
+            .iter()
+            .find(|s| s.name == "bar" && s.kind == SymbolKind::Function)
+            .expect("bar symbol");
+        let baz = symbols
+            .iter()
+            .find(|s| s.name == "baz" && s.kind == SymbolKind::Function)
+            .expect("baz symbol");
+
+        let foo_calls: Vec<&str> = foo.calls.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            foo_calls.contains(&"bar") && foo_calls.contains(&"baz"),
+            "expected foo to call bar and baz"
+        );
+
+        let bar_callers: Vec<&str> = bar.called_by.iter().map(|c| c.name.as_str()).collect();
+        let baz_callers: Vec<&str> = baz.called_by.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            bar_callers.contains(&"foo") && baz_callers.contains(&"foo"),
+            "expected bar and baz to be called by foo"
+        );
+
+        let qux_calls: Vec<&str> = qux.calls.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            qux_calls.contains(&"foo"),
+            "expected qux to call foo"
+        );
+
+        let foo_callers: Vec<&str> = foo.called_by.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            foo_callers.contains(&"qux"),
+            "expected foo to be called by qux"
+        );
     }
 }

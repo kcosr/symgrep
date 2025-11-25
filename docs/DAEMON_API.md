@@ -70,8 +70,8 @@ Content-Type: application/json
   "exclude_globs": [],
   "language": null,
   "mode": "text",
-   "literal": false,
-  "context": "none",
+  "literal": false,
+  "reindex_on_search": false,
   "limit": null,
   "max_lines": null,
   "index": null,
@@ -83,7 +83,7 @@ Content-Type: application/json
 
 ```json
 {
-  "version": "0.1.0",
+  "version": "1.1.0",
   "query": "foo",
   "matches": [
     {
@@ -101,6 +101,11 @@ Content-Type: application/json
   }
 }
 ```
+
+`max_lines` in `SearchConfig` has the same semantics as the CLI:
+
+- In **text mode**, it controls `matches[*].snippet` (`0` disables snippets by making them `null`; other values keep the single-line snippet used today).
+- In **symbol/auto modes**, it is treated as a presentation hint only; daemon/JSON responses always include full `contexts[*].snippet` values and full `def_line_count` values, regardless of `max_lines`.
 
 #### Example Error Response
 
@@ -150,8 +155,8 @@ Content-Type: application/json
   "files_indexed": 3,
   "symbols_indexed": 42,
   "root_path": "/abs/path/to/project",
-  "schema_version": "1",
-  "tool_version": "0.1.0",
+  "schema_version": "2",
+  "tool_version": "0.3.0",
   "created_at": "2025-11-23T07:30:00Z",
   "updated_at": "2025-11-23T09:05:00Z"
 }
@@ -211,8 +216,8 @@ Example success response:
   "files_indexed": 3,
   "symbols_indexed": 42,
   "root_path": "/abs/path/to/project",
-  "schema_version": "1",
-  "tool_version": "0.1.0",
+  "schema_version": "2",
+  "tool_version": "0.3.0",
   "created_at": "2025-11-23T07:30:00Z",
   "updated_at": "2025-11-23T09:05:00Z"
 }
@@ -228,13 +233,85 @@ Example error response for a missing index:
 
 ---
 
-## 6. Versioning & Compatibility
+## 6. Symbol Attributes Endpoint
+
+### `POST /v1/symbol/attributes`
+
+Update per-symbol attributes (keywords and description) in an
+existing index without modifying source files. This mirrors the
+`symgrep annotate` CLI command.
+
+- Request body: JSON `SymbolAttributesRequest`:
+
+  ```json
+  {
+    "index": { /* IndexConfig */ },
+    "selector": {
+      "file": "src/auth/login.ts",
+      "language": "typescript",
+      "kind": "function",
+      "name": "loginUser",
+      "start_line": 42,
+      "end_line": 60
+    },
+    "attributes": {
+      "keywords": ["auth", "login", "jwt"],
+      "description": "Performs user authentication and issues JWTs"
+    }
+  }
+  ```
+
+- Semantics:
+  - The `index` field reuses the standard `IndexConfig` shape and
+    identifies which on-disk index to open.
+  - The `selector` identifies a single symbol by file path,
+    language, kind, name, and line range.
+  - The `attributes` payload replaces the symbol’s `keywords` and
+    `description` fields; the `comment` field remains owned by
+    source code and is not modified.
+
+- Response:
+  - `200 OK` with a `SymbolAttributesResponse` containing the
+    updated `symbol` (including its effective `attributes`) on
+    success.
+  - `400 Bad Request` when no symbol matches the selector or when
+    the selector is ambiguous (matches multiple symbols).
+  - `404 Not Found` when the requested index does not exist.
+
+Example success response (abridged):
+
+```json
+{
+  "symbol": {
+    "name": "loginUser",
+    "kind": "function",
+    "language": "typescript",
+    "file": "src/auth/login.ts",
+    "range": { "start_line": 42, "start_column": 1, "end_line": 60, "end_column": 1 },
+    "attributes": {
+      "comment": "Handles user login and JWT issuance.",
+      "comment_range": {
+        "start_line": 40,
+        "start_column": 1,
+        "end_line": 44,
+        "end_column": 2
+      },
+      "keywords": ["auth", "login", "jwt"],
+      "description": "Performs user authentication and issues JWTs"
+    }
+  }
+}
+```
+
+---
+
+## 7. Versioning & Compatibility
 
 The daemon reuses the same JSON schema version as the CLI’s
 `--format=json` output:
 
 - `SearchResult.version` indicates the schema version
-  (e.g. `"0.1.0"`).
+  (e.g. `"1.1.0"`).
 - Backward-incompatible changes to `SearchResult` or `IndexSummary`
   will bump this version and be reflected in both CLI and daemon
   responses.
@@ -247,7 +324,7 @@ Client guidance:
 
 ---
 
-## 6. CLI Integration (`--server` / `--no-server`)
+## 8. CLI Integration (`--server` / `--no-server`)
 
 The CLI can act as a thin HTTP client when a server URL is provided:
 

@@ -47,9 +47,9 @@ impl FileIndexBackend {
         let meta = if meta_path.exists() {
             let file = File::open(&meta_path)?;
             let meta: IndexMeta = serde_json::from_reader(file)?;
-            if meta.schema_version != "1" {
+            if meta.schema_version != "1" && meta.schema_version != "2" {
                 anyhow::bail!(
-                    "unsupported index schema version {}; expected 1",
+                    "unsupported index schema version {}; expected 1 or 2",
                     meta.schema_version
                 );
             }
@@ -223,7 +223,7 @@ impl IndexBackend for FileIndexBackend {
         } else {
             let now = crate::index::current_epoch_seconds();
             Ok(IndexMeta {
-                schema_version: "1".to_string(),
+                schema_version: "2".to_string(),
                 tool_version: env!("CARGO_PKG_VERSION").to_string(),
                 root_path: String::new(),
                 created_at: now,

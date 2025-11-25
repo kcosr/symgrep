@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn index_meta_round_trips_with_serde() {
         let meta = IndexMeta {
-            schema_version: "1".to_string(),
+            schema_version: "2".to_string(),
             tool_version: "0.0.0".to_string(),
             root_path: "/path/to/project".to_string(),
             created_at: 1_700_000_000,

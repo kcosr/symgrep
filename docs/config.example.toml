@@ -14,6 +14,7 @@ paths = ["."]
 use_index = true           # equivalent to --use-index
 index_backend = "sqlite"   # file|sqlite
 index_path = ".symgrep/index.sqlite"
+# reindex_on_search = false   # when true, rebuild the index before each symbol search
 
 # Additional optional defaults (uncomment to use):
 # globs = ["*.rs", "*.ts", "*.js"]
@@ -21,7 +22,7 @@ index_path = ".symgrep/index.sqlite"
 # language = "typescript"
 # literal = false
 # mode = "symbol"            # text|symbol|auto
-# context = "parent"         # none|decl|def|parent
+# view = ["def", "matches"]  # meta|decl|def|parent|comment|matches
 # limit = 100
 # max_lines = 20
 # format = "json"            # text|table|json
@@ -64,8 +65,26 @@ index_path = ".symgrep/index.sqlite"
 
 # addr = "127.0.0.1:7878"
 
+[follow]
+# CLI: symgrep follow <pattern> [...]
+
+# Common defaults for callers/callees exploration:
+paths = ["."]
+
+# Additional optional defaults (uncomment to use):
+# globs = ["*.ts", "*.js", "*.cpp"]
+# exclude = ["target", "node_modules"]
+# language = "typescript"
+# literal = false
+# direction = "callers"     # callers|callees|both
+# limit = 50
+# context = 2
+# max_lines = 40
+# format = "text"           # text|json
+# server = "http://127.0.0.1:7878"
+# no_server = false
+
 [http]
 # Shared default server URL used when subcommand-level `server` is not set.
 
 # server_url = "http://127.0.0.1:7878"
-

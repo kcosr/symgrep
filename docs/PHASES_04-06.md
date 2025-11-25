@@ -69,7 +69,7 @@ This document contains detailed tasks for:
    - Integration tests:
      - Queries like:
        - `name:Limiter kind:class|interface`
-       - `name:process|handle text:"rate limit"`
+       - `name:process|handle content:"rate limit"`
        - Use `--context=parent` and validate snippets.
    - Run full test suite to confirm no regressions.
 

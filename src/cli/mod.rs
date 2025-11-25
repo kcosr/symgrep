@@ -8,15 +8,20 @@ use crate::search::engine;
 use crate::server;
 
 mod args;
+mod follow;
 mod format;
 mod http_backend;
 mod config;
 
-pub use args::{Cli, Commands, IndexArgs, IndexInfoArgs, OutputFormat, SearchArgs, ServeArgs};
+pub use args::{
+    AnnotateArgs, Cli, Commands, FollowArgs, IndexArgs, IndexInfoArgs, OutputFormat, SearchArgs,
+    ServeArgs,
+};
 
 use config::{
-    apply_index_config_defaults, apply_index_info_config_defaults, apply_search_config_defaults,
-    apply_serve_config_defaults, load_cli_config,
+    apply_annotate_config_defaults, apply_follow_config_defaults, apply_index_config_defaults,
+    apply_index_info_config_defaults, apply_search_config_defaults, apply_serve_config_defaults,
+    load_cli_config,
 };
 use http_backend::HttpSearchBackend;
 
@@ -54,7 +59,7 @@ pub fn run() -> Result<()> {
             };
 
             match search_args.format {
-                OutputFormat::Text => format::print_text(&result),
+                OutputFormat::Text => format::print_text(&result, &search_args),
                 OutputFormat::Table => format::print_table(&result),
                 OutputFormat::Json => {
                     serde_json::to_writer(std::io::stdout(), &result)?;
@@ -120,6 +125,38 @@ pub fn run() -> Result<()> {
                 }
             }
         }
+        Some(Commands::Follow(mut follow_args)) => {
+            if let Some(ref config) = cli_config {
+                apply_follow_config_defaults(config, &mut follow_args);
+            }
+
+            let search_config = args::follow_search_config_from_args(&follow_args)?;
+            let search_result = if let Some(server_url) = effective_server_url(
+                follow_args.server.as_deref(),
+                follow_args.no_server,
+            ) {
+                let backend = HttpSearchBackend::new(server_url)?;
+                backend.search(search_config)?
+            } else {
+                engine::run_search(search_config)?
+            };
+
+            let direction = follow_args.direction.to_model();
+            let follow_result = follow::build_follow_result(&search_result, direction);
+
+            match follow_args.format {
+                OutputFormat::Json => {
+                    serde_json::to_writer(std::io::stdout(), &follow_result)?;
+                    println!();
+                    Ok(())
+                }
+                // Table output is not currently specialized for follow;
+                // treat it as text for now.
+                OutputFormat::Text | OutputFormat::Table => {
+                    follow::print_follow_text(&follow_result, &follow_args)
+                }
+            }
+        }
         Some(Commands::Serve(mut serve_args)) => {
             if let Some(ref config) = cli_config {
                 apply_serve_config_defaults(config, &mut serve_args);
@@ -133,6 +170,27 @@ pub fn run() -> Result<()> {
                 .build()?;
 
             runtime.block_on(server::run(addr))?;
+            Ok(())
+        }
+        Some(Commands::Annotate(mut annotate_args)) => {
+            if let Some(ref config) = cli_config {
+                apply_annotate_config_defaults(config, &mut annotate_args);
+            }
+
+            let request = args::symbol_attributes_request_from_args(&annotate_args)?;
+
+            let response = if let Some(server_url) = effective_server_url(
+                annotate_args.server.as_deref(),
+                annotate_args.no_server,
+            ) {
+                let backend = HttpSearchBackend::new(server_url)?;
+                backend.update_symbol_attributes(request)?
+            } else {
+                crate::index::update_symbol_attributes(request)?
+            };
+
+            serde_json::to_writer(std::io::stdout(), &response)?;
+            println!();
             Ok(())
         }
         None => {

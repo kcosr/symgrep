@@ -27,7 +27,11 @@ use globset::{Glob, GlobSet};
 use ignore::WalkBuilder;
 
 use crate::language::{backend_for_language, backend_for_path};
-use crate::models::{IndexConfig, IndexSummary};
+use crate::models::{
+    IndexConfig, IndexSummary, Symbol, SymbolAttributes, SymbolAttributesRequest,
+    SymbolAttributesResponse, SymbolKind,
+};
+use serde_json::Value;
 
 /// Run indexing for the given configuration using the configured backend.
 ///
@@ -68,12 +72,12 @@ pub fn get_index_info(config: &IndexConfig) -> Result<IndexSummary> {
         }
     }
 
-    let mut backend = backend::open_backend(config)?;
+    let backend = backend::open_backend(config)?;
 
     let meta = backend.load_meta().unwrap_or_else(|_| {
         let now = current_epoch_seconds();
         IndexMeta {
-            schema_version: "1".to_string(),
+            schema_version: "2".to_string(),
             tool_version: env!("CARGO_PKG_VERSION").to_string(),
             root_path: String::new(),
             created_at: now,
@@ -139,7 +143,7 @@ pub(crate) fn build_index(
     let mut meta = backend.load_meta().unwrap_or_else(|_| {
         let now = current_epoch_seconds();
         IndexMeta {
-            schema_version: "1".to_string(),
+            schema_version: "2".to_string(),
             tool_version: env!("CARGO_PKG_VERSION").to_string(),
             root_path: String::new(),
             created_at: now,
@@ -157,6 +161,20 @@ pub(crate) fn build_index(
                 canonical_root.display()
             );
         }
+    }
+
+    // Upgrade older index metadata to the current logical schema
+    // version while preserving other fields.
+    if meta.schema_version != "2" {
+        // Older schema versions (e.g. "1") are still readable but
+        // are upgraded in-place on the next successful index run.
+        if meta.schema_version != "1" {
+            bail!(
+                "unsupported index schema version {}; expected 1 or 2",
+                meta.schema_version
+            );
+        }
+        meta.schema_version = "2".to_string();
     }
 
     let include_globs = build_globset(&config.globs)?;
@@ -272,16 +290,39 @@ pub(crate) fn build_index(
 
         existing_by_path.insert(file_record.path.clone(), file_record.clone());
 
+        // Load existing symbols for this file so we can preserve
+        // externally-managed attributes (keywords, descriptions)
+        // across reindex runs.
+        let existing_symbols = backend.query_symbols(&SymbolQuery {
+            name_substring: None,
+            language: Some(file_record.language.clone()),
+            paths: vec![file_record.path.clone()],
+            globs: Vec::new(),
+            exclude_globs: Vec::new(),
+        })?;
+
+        let mut existing_by_identity = std::collections::HashMap::new();
+        for record in existing_symbols {
+            let identity = SymbolIdentity::from_record(&record);
+            existing_by_identity.insert(identity, record);
+        }
+
         let new_symbols: Vec<NewSymbolRecord> = symbols
             .into_iter()
-            .map(|s| NewSymbolRecord {
-                file_id: file_record.id,
-                name: s.name,
-                kind: s.kind,
-                language: s.language,
-                range: s.range,
-                signature: s.signature,
-                extra: None,
+            .map(|s| {
+                let identity = SymbolIdentity::from_symbol(&s);
+                let existing = existing_by_identity.get(&identity);
+                let merged_attrs = merge_symbol_attributes_for_index(existing, &s);
+
+                NewSymbolRecord {
+                    file_id: file_record.id,
+                    name: s.name,
+                    kind: s.kind,
+                    language: s.language,
+                    range: s.range,
+                    signature: s.signature,
+                    extra: symbol_attributes_to_extra(&merged_attrs),
+                }
             })
             .collect();
 
@@ -322,6 +363,101 @@ fn path_within_any(path: &Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|root| path.starts_with(root))
 }
 
+/// Internal identity key used to match symbols across index runs for
+/// a single file.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SymbolIdentity {
+    kind: SymbolKind,
+    name: String,
+    start_line: u32,
+    end_line: u32,
+    signature: Option<String>,
+}
+
+impl SymbolIdentity {
+    fn from_symbol(symbol: &Symbol) -> Self {
+        Self {
+            kind: symbol.kind,
+            name: symbol.name.clone(),
+            start_line: symbol.range.start_line,
+            end_line: symbol.range.end_line,
+            signature: symbol.signature.clone(),
+        }
+    }
+
+    fn from_record(record: &SymbolRecord) -> Self {
+        Self {
+            kind: record.kind,
+            name: record.name.clone(),
+            start_line: record.range.start_line,
+            end_line: record.range.end_line,
+            signature: record.signature.clone(),
+        }
+    }
+}
+
+fn empty_symbol_attributes() -> SymbolAttributes {
+    SymbolAttributes {
+        comment: None,
+        comment_range: None,
+        keywords: Vec::new(),
+        description: None,
+    }
+}
+
+fn merge_symbol_attributes_for_index(
+    existing: Option<&SymbolRecord>,
+    symbol: &Symbol,
+) -> SymbolAttributes {
+    let (new_comment, new_comment_range) = match symbol.attributes.as_ref() {
+        Some(attrs) => (attrs.comment.clone(), attrs.comment_range),
+        None => (None, None),
+    };
+
+    let mut merged = empty_symbol_attributes();
+    merged.comment = new_comment;
+    merged.comment_range = new_comment_range;
+
+    if let Some(record) = existing {
+        if let Some(existing_attrs) = symbol_attributes_from_extra(&record.extra) {
+            // Preserve externally-owned attributes across reindex
+            // runs; comments always come from fresh AST extraction.
+            merged.keywords = existing_attrs.keywords;
+            merged.description = existing_attrs.description;
+        }
+    }
+
+    merged
+}
+
+/// Convert optional symbol attributes into a serialized `extra`
+/// payload for the index.
+fn symbol_attributes_to_extra(attrs: &SymbolAttributes) -> Option<Value> {
+    let has_comment = attrs.comment.is_some();
+    let has_comment_range = attrs.comment_range.is_some();
+    let has_keywords = !attrs.keywords.is_empty();
+    let has_desc = attrs.description.is_some();
+
+    if !has_comment && !has_comment_range && !has_keywords && !has_desc {
+        return None;
+    }
+
+    serde_json::to_value(attrs).ok()
+}
+
+/// Hydrate `SymbolAttributes` from an indexed `extra` payload.
+pub(crate) fn symbol_attributes_from_extra(extra: &Option<Value>) -> Option<SymbolAttributes> {
+    extra
+        .as_ref()
+        .and_then(|v| {
+            if v.is_object() {
+                serde_json::from_value(v.clone()).ok()
+            } else {
+                None
+            }
+        })
+}
+
 pub(crate) fn build_globset(patterns: &[String]) -> Result<Option<GlobSet>> {
     if patterns.is_empty() {
         return Ok(None);
@@ -347,4 +483,125 @@ fn format_timestamp_iso8601(secs: u64) -> Option<String> {
     let ts = secs as i64;
     let dt = OffsetDateTime::from_unix_timestamp(ts).ok()?;
     Some(dt.format(&Rfc3339).unwrap_or_else(|_| dt.to_string()))
+}
+
+/// Update keywords/description attributes for a single symbol in an
+/// existing index, identified by a `SymbolSelector`.
+pub fn update_symbol_attributes(
+    request: SymbolAttributesRequest,
+) -> Result<SymbolAttributesResponse> {
+    let mut backend = open_backend(&request.index)?;
+
+    let selector = request.selector;
+    let update = request.attributes;
+
+    let file_record = backend
+        .get_file_by_path(&selector.file)?
+        .ok_or_else(|| anyhow::anyhow!("symbol file not found in index: {}", selector.file.display()))?;
+
+    let symbol_query = SymbolQuery {
+        name_substring: None,
+        language: Some(selector.language.clone()),
+        paths: vec![selector.file.clone()],
+        globs: Vec::new(),
+        exclude_globs: Vec::new(),
+    };
+
+    let mut records = backend.query_symbols(&symbol_query)?;
+
+    if records.is_empty() {
+        anyhow::bail!(
+            "no symbols found in index for file {} and language {}",
+            selector.file.display(),
+            selector.language
+        );
+    }
+
+    let mut target_idx: Option<usize> = None;
+
+    for (idx, record) in records.iter().enumerate() {
+        if record.file_id != file_record.id {
+            continue;
+        }
+
+        if record.kind != selector.kind {
+            continue;
+        }
+
+        if record.name != selector.name {
+            continue;
+        }
+
+        if record.range.start_line != selector.start_line
+            || record.range.end_line != selector.end_line
+        {
+            continue;
+        }
+
+        if let Some(prev) = target_idx {
+            anyhow::bail!(
+                "selector matched multiple symbols in index (at least ids {} and {})",
+                records[prev].id,
+                record.id
+            );
+        }
+
+        target_idx = Some(idx);
+    }
+
+    let target_idx =
+        target_idx.ok_or_else(|| anyhow::anyhow!("no symbol matched the provided selector"))?;
+
+    // Compute updated attributes for the target symbol.
+    let target_record = &records[target_idx];
+    let target_range = target_record.range;
+    let target_signature = target_record.signature.clone();
+    let mut target_attrs = symbol_attributes_from_extra(&target_record.extra)
+        .unwrap_or_else(empty_symbol_attributes);
+    target_attrs.keywords = update.keywords;
+    target_attrs.description = update.description;
+
+    // Rewrite all symbols for this file, updating only the target
+    // symbol's attributes.
+    let mut new_symbols: Vec<NewSymbolRecord> = Vec::with_capacity(records.len());
+
+    for (idx, record) in records.into_iter().enumerate() {
+        let attrs = if idx == target_idx {
+            target_attrs.clone()
+        } else {
+            symbol_attributes_from_extra(&record.extra).unwrap_or_else(empty_symbol_attributes)
+        };
+
+        let extra = symbol_attributes_to_extra(&attrs);
+
+        new_symbols.push(NewSymbolRecord {
+            file_id: record.file_id,
+            name: record.name,
+            kind: record.kind,
+            language: record.language,
+            range: record.range,
+            signature: record.signature,
+            extra,
+        });
+    }
+
+    backend.set_file_symbols(file_record.id, &new_symbols)?;
+
+    let updated_symbol = Symbol {
+        name: selector.name,
+        kind: selector.kind,
+        language: selector.language,
+        file: selector.file,
+        range: target_range,
+        signature: target_signature,
+        attributes: Some(target_attrs),
+        def_line_count: None,
+        matches: Vec::new(),
+         calls: Vec::new(),
+         called_by: Vec::new(),
+    };
+
+    Ok(SymbolAttributesResponse {
+        symbol: updated_symbol,
+    })
 }

@@ -171,8 +171,8 @@ fn cli_search_symbol_literal_enforces_exact_symbol_names() {
         fixture_dir.to_str().unwrap(),
         "--mode",
         "symbol",
-        "--context",
-        "none",
+        "--view",
+        "meta",
         "--format",
         "json",
     ]);
@@ -207,8 +207,8 @@ fn cli_search_symbol_literal_enforces_exact_symbol_names() {
         fixture_dir.to_str().unwrap(),
         "--mode",
         "symbol",
-        "--context",
-        "none",
+        "--view",
+        "meta",
         "--format",
         "json",
         "--literal",
@@ -249,7 +249,7 @@ fn cli_search_json_outputs_structured_result_with_version() {
     let value: Value =
         serde_json::from_slice(&assert.get_output().stdout).expect("valid json output");
 
-    assert_eq!(value["version"], "0.1.0");
+    assert_eq!(value["version"], "1.2.0");
     assert_eq!(value["query"], "foo");
 
     let matches = value["matches"].as_array().expect("matches array");
@@ -498,6 +498,31 @@ fn cli_search_text_matches_snapshot_for_text_repo() {
 }
 
 #[test]
+fn cli_search_text_with_context_prints_context_blocks() {
+    let fixture_dir = fixture_dir();
+
+    let mut cmd = cargo_bin_cmd!("symgrep");
+    cmd.args([
+        "search",
+        "foo",
+        "--path",
+        fixture_dir.to_str().unwrap(),
+        "--format",
+        "text",
+        "--context",
+        "1",
+    ]);
+
+    let assert = cmd.assert().success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8");
+
+    let snapshot = fs::read_to_string("tests/snapshots/text_search_foo_context_1.txt")
+        .expect("snapshot file");
+
+    assert_eq!(output.trim(), snapshot.trim());
+}
+
+#[test]
 fn cli_search_text_mixed_repo_matches_all_languages() {
     let mut cmd = cargo_bin_cmd!("symgrep");
     cmd.args([
@@ -580,7 +605,7 @@ fn cli_search_table_output_for_symbol_includes_context_name() {
         "cpp",
         "--mode",
         "symbol",
-        "--context",
+        "--view",
         "parent",
         "--format",
         "table",
@@ -612,14 +637,14 @@ fn cli_search_symbol_ts_json_includes_symbols_and_decl_context() {
     let mut cmd = cargo_bin_cmd!("symgrep");
     cmd.args([
         "search",
-        "name:add kind:function",
+        "name:=add kind:function",
         "--path",
         "tests/fixtures/ts_js_repo",
         "--language",
         "typescript",
         "--mode",
         "symbol",
-        "--context",
+        "--view",
         "decl",
         "--format",
         "json",
@@ -656,7 +681,7 @@ fn cli_search_symbol_ts_multiline_decl_includes_full_signature() {
         "typescript",
         "--mode",
         "symbol",
-        "--context",
+        "--view",
         "decl",
         "--format",
         "json",
@@ -692,19 +717,63 @@ fn cli_search_symbol_ts_multiline_decl_includes_full_signature() {
 }
 
 #[test]
+fn cli_search_symbol_ts_def_populates_def_line_count_in_json() {
+    let mut cmd = cargo_bin_cmd!("symgrep");
+    cmd.args([
+        "search",
+        "name:multilineAdd kind:function",
+        "--path",
+        "tests/fixtures/ts_js_repo",
+        "--language",
+        "typescript",
+        "--mode",
+        "symbol",
+        "--view",
+        "def",
+        "--format",
+        "json",
+    ]);
+
+    let assert = cmd.assert().success();
+    let value: Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("valid json output");
+
+    let symbols = value["symbols"].as_array().expect("symbols array");
+    assert_eq!(symbols.len(), 1);
+
+    let symbol = &symbols[0];
+    assert_eq!(symbol["name"], "multilineAdd");
+    assert_eq!(symbol["language"], "typescript");
+
+    let def_line_count = symbol["def_line_count"]
+        .as_u64()
+        .expect("def_line_count present");
+
+    let contexts = value["contexts"].as_array().expect("contexts array");
+    assert_eq!(contexts.len(), 1);
+    let snippet = contexts[0]["snippet"].as_str().expect("snippet string");
+
+    let snippet_lines = snippet.lines().count() as u64;
+    assert_eq!(
+        def_line_count, snippet_lines,
+        "def_line_count should match number of lines in Def snippet"
+    );
+}
+
+#[test]
 fn cli_search_symbol_js_respects_context_none() {
     let mut cmd = cargo_bin_cmd!("symgrep");
     cmd.args([
         "search",
-        "name:add kind:function",
+        "name:=add kind:function",
         "--path",
         "tests/fixtures/ts_js_repo",
         "--language",
         "javascript",
         "--mode",
         "symbol",
-        "--context",
-        "none",
+        "--view",
+        "meta",
         "--format",
         "json",
     ]);
@@ -734,7 +803,7 @@ fn cli_search_symbol_js_multiline_decl_includes_full_signature() {
         "javascript",
         "--mode",
         "symbol",
-        "--context",
+        "--view",
         "decl",
         "--format",
         "json",
@@ -781,7 +850,7 @@ fn cli_search_symbol_cpp_json_includes_symbols_and_decl_context() {
         "cpp",
         "--mode",
         "symbol",
-        "--context",
+        "--view",
         "decl",
         "--format",
         "json",
@@ -807,6 +876,173 @@ fn cli_search_symbol_cpp_json_includes_symbols_and_decl_context() {
 }
 
 #[test]
+fn cli_search_symbol_rust_parent_context_includes_module_and_type() {
+    let mut cmd = cargo_bin_cmd!("symgrep");
+    cmd.args([
+        "search",
+        "name:increment kind:method language:rust",
+        "--path",
+        "tests/fixtures/rust_repo",
+        "--mode",
+        "symbol",
+        "--view",
+        "parent",
+        "--format",
+        "json",
+    ]);
+
+    let assert = cmd.assert().success();
+    let value: Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("valid json output");
+
+    let symbols = value["symbols"].as_array().expect("symbols array");
+    assert_eq!(symbols.len(), 1);
+
+    let symbol = &symbols[0];
+    assert_eq!(symbol["name"], "increment");
+    assert_eq!(symbol["kind"], "method");
+    assert_eq!(symbol["language"], "rust");
+
+    let contexts = value["contexts"].as_array().expect("contexts array");
+    assert_eq!(contexts.len(), 1);
+    let context = &contexts[0];
+
+    let chain = context["parent_chain"]
+        .as_array()
+        .expect("parent_chain array");
+    assert!(
+        chain.len() >= 3,
+        "expected file, module and type in parent_chain"
+    );
+
+    let names: Vec<&str> = chain
+        .iter()
+        .map(|n| n["name"].as_str().expect("name string"))
+        .collect();
+
+    assert_eq!(names[0], "lib.rs");
+    assert!(
+        names.iter().any(|n| *n == "my_mod"),
+        "expected module 'my_mod' in parent_chain"
+    );
+    assert!(
+        names.iter().any(|n| *n == "Widget"),
+        "expected type 'Widget' in parent_chain"
+    );
+
+    let snippet = context["snippet"].as_str().expect("snippet string");
+    assert!(snippet.contains("impl Widget"));
+    assert!(snippet.contains("fn increment"));
+}
+
+#[test]
+fn cli_search_symbol_rust_trait_method_decl_includes_signature() {
+    let mut cmd = cargo_bin_cmd!("symgrep");
+    cmd.args([
+        "search",
+        "name:greet kind:method language:rust",
+        "--path",
+        "tests/fixtures/rust_repo",
+        "--mode",
+        "symbol",
+        "--view",
+        "decl",
+        "--format",
+        "json",
+    ]);
+
+    let assert = cmd.assert().success();
+    let value: Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("valid json output");
+
+    let symbols = value["symbols"].as_array().expect("symbols array");
+    assert_eq!(symbols.len(), 1);
+
+    let symbol = &symbols[0];
+    assert_eq!(symbol["name"], "greet");
+    assert_eq!(symbol["kind"], "method");
+    assert_eq!(symbol["language"], "rust");
+
+    let contexts = value["contexts"].as_array().expect("contexts array");
+    assert_eq!(contexts.len(), 1);
+    let context = &contexts[0];
+
+    let snippet = context["snippet"].as_str().expect("snippet string");
+    assert!(
+        snippet.contains("fn greet(&self)"),
+        "expected decl snippet to contain trait method signature"
+    );
+}
+
+#[test]
+fn cli_search_symbol_rust_deeply_nested_modules_build_full_parent_chain() {
+    let mut cmd = cargo_bin_cmd!("symgrep");
+    cmd.args([
+        "search",
+        "name:depth kind:method language:rust",
+        "--path",
+        "tests/fixtures/rust_repo",
+        "--mode",
+        "symbol",
+        "--view",
+        "parent",
+        "--format",
+        "json",
+    ]);
+
+    let assert = cmd.assert().success();
+    let value: Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("valid json output");
+
+    let symbols = value["symbols"].as_array().expect("symbols array");
+    assert_eq!(symbols.len(), 1);
+
+    let symbol = &symbols[0];
+    assert_eq!(symbol["name"], "depth");
+    assert_eq!(symbol["kind"], "method");
+    assert_eq!(symbol["language"], "rust");
+
+    let contexts = value["contexts"].as_array().expect("contexts array");
+    assert_eq!(contexts.len(), 1);
+    let context = &contexts[0];
+
+    let chain = context["parent_chain"]
+        .as_array()
+        .expect("parent_chain array");
+    assert!(
+        chain.len() >= 5,
+        "expected file and deep module/type chain in parent_chain"
+    );
+
+    let names: Vec<&str> = chain
+        .iter()
+        .map(|n| n["name"].as_str().expect("name string"))
+        .collect();
+
+    assert_eq!(names[0], "lib.rs");
+    assert!(
+        names.iter().any(|n| *n == "deep"),
+        "expected module 'deep' in parent_chain"
+    );
+    assert!(
+        names.iter().any(|n| *n == "level1"),
+        "expected module 'level1' in parent_chain"
+    );
+    assert!(
+        names.iter().any(|n| *n == "level2"),
+        "expected module 'level2' in parent_chain"
+    );
+    assert!(
+        names.iter().any(|n| *n == "DeepWidget"),
+        "expected type 'DeepWidget' in parent_chain"
+    );
+
+    let snippet = context["snippet"].as_str().expect("snippet string");
+    assert!(snippet.contains("impl DeepWidget"));
+    assert!(snippet.contains("fn depth"));
+}
+
+#[test]
 fn cli_search_symbol_cpp_decl_text_includes_multiline_signature() {
     let mut cmd = cargo_bin_cmd!("symgrep");
     cmd.args([
@@ -818,7 +1054,7 @@ fn cli_search_symbol_cpp_decl_text_includes_multiline_signature() {
         "cpp",
         "--mode",
         "symbol",
-        "--context",
+        "--view",
         "decl",
         "--format",
         "text",
@@ -832,7 +1068,7 @@ fn cli_search_symbol_cpp_decl_text_includes_multiline_signature() {
         "expected header line for multiline_function"
     );
     assert!(
-        output.contains("    void multiline_function("),
+        output.contains("void multiline_function("),
         "expected decl snippet to include return type and name on first line"
     );
     assert!(
@@ -857,7 +1093,7 @@ fn cli_search_symbol_cpp_def_context_includes_function_body() {
         "cpp",
         "--mode",
         "symbol",
-        "--context",
+        "--view",
         "def",
         "--format",
         "json",
@@ -881,6 +1117,201 @@ fn cli_search_symbol_cpp_def_context_includes_function_body() {
 }
 
 #[test]
+fn cli_search_symbol_def_text_header_includes_def_line_count() {
+    let mut cmd = cargo_bin_cmd!("symgrep");
+    cmd.args([
+        "search",
+        "name:multilineAdd kind:function",
+        "--path",
+        "tests/fixtures/ts_js_repo",
+        "--language",
+        "typescript",
+        "--mode",
+        "symbol",
+        "--view",
+        "def",
+        "--format",
+        "text",
+    ]);
+
+    let assert = cmd.assert().success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8");
+
+    let header_line = output.lines().next().unwrap_or_default();
+    assert!(
+        header_line.contains("multilineAdd"),
+        "expected header line for multilineAdd, got: {header_line}"
+    );
+    assert!(
+        header_line.contains("(def:") && header_line.contains("lines)"),
+        "expected header to include def line count suffix, got: {header_line}"
+    );
+}
+
+#[test]
+fn cli_search_symbol_def_text_truncates_body_with_max_lines() {
+    let mut cmd = cargo_bin_cmd!("symgrep");
+    cmd.args([
+        "search",
+        "name:multilineAdd kind:function",
+        "--path",
+        "tests/fixtures/ts_js_repo",
+        "--language",
+        "typescript",
+        "--mode",
+        "symbol",
+        "--view",
+        "def",
+        "--format",
+        "text",
+        "--max-lines",
+        "2",
+    ]);
+
+    let assert = cmd.assert().success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8");
+
+    let mut lines = output.lines();
+    let header_line = lines.next().unwrap_or_default();
+    assert!(
+        header_line.contains("multilineAdd"),
+        "expected header line for multilineAdd, got: {header_line}"
+    );
+
+    let body_lines: Vec<&str> = lines.collect();
+    assert_eq!(
+        body_lines.len(),
+        2,
+        "expected exactly two body lines under header, got {}",
+        body_lines.len()
+    );
+}
+
+#[test]
+fn cli_search_symbol_def_text_hides_body_when_max_lines_is_zero() {
+    let mut cmd = cargo_bin_cmd!("symgrep");
+    cmd.args([
+        "search",
+        "name:multilineAdd kind:function",
+        "--path",
+        "tests/fixtures/ts_js_repo",
+        "--language",
+        "typescript",
+        "--mode",
+        "symbol",
+        "--view",
+        "def",
+        "--format",
+        "text",
+        "--max-lines",
+        "0",
+    ]);
+
+    let assert = cmd.assert().success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8");
+
+    let mut lines = output.lines();
+    let header_line = lines.next().unwrap_or_default();
+    assert!(
+        header_line.contains("multilineAdd"),
+        "expected header line for multilineAdd, got: {header_line}"
+    );
+    assert!(
+        lines.next().is_none(),
+        "expected no body lines when max-lines is 0"
+    );
+}
+
+#[test]
+fn cli_search_symbol_def_matches_respects_max_lines_for_match_lines() {
+    let mut cmd = cargo_bin_cmd!("symgrep");
+    cmd.args([
+        "search",
+        "name:increment kind:method content:delta",
+        "--path",
+        "tests/fixtures/cpp_repo",
+        "--language",
+        "cpp",
+        "--mode",
+        "symbol",
+        "--view",
+        "def,matches",
+        "--format",
+        "text",
+        "--max-lines",
+        "1",
+    ]);
+
+    let assert = cmd.assert().success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8");
+
+    let mut lines = output.lines();
+    let header_line = lines.next().unwrap_or_default();
+    assert!(
+        header_line.contains("increment"),
+        "expected header line for increment, got: {header_line}"
+    );
+
+    let body_lines: Vec<&str> = lines.collect();
+    assert_eq!(
+        body_lines.len(),
+        1,
+        "expected exactly one match line under header when max-lines is 1, got {}",
+        body_lines.len()
+    );
+}
+
+#[test]
+fn cli_search_symbol_def_json_ignores_max_lines() {
+    let mut cmd = cargo_bin_cmd!("symgrep");
+    cmd.args([
+        "search",
+        "name:multilineAdd kind:function",
+        "--path",
+        "tests/fixtures/ts_js_repo",
+        "--language",
+        "typescript",
+        "--mode",
+        "symbol",
+        "--view",
+        "def",
+        "--format",
+        "json",
+        "--max-lines",
+        "1",
+    ]);
+
+    let assert = cmd.assert().success();
+    let value: Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("valid json output");
+
+    let symbols = value["symbols"].as_array().expect("symbols array");
+    assert_eq!(symbols.len(), 1);
+
+    let symbol = &symbols[0];
+    assert_eq!(symbol["name"], "multilineAdd");
+    assert_eq!(symbol["language"], "typescript");
+
+    let def_line_count = symbol["def_line_count"]
+        .as_u64()
+        .expect("def_line_count present");
+
+    let contexts = value["contexts"].as_array().expect("contexts array");
+    assert_eq!(contexts.len(), 1);
+    let snippet = contexts[0]["snippet"].as_str().expect("snippet string");
+
+    let snippet_lines = snippet.lines().count() as u64;
+    assert!(
+        snippet_lines >= 2,
+        "expected multi-line def snippet for multilineAdd"
+    );
+    assert_eq!(
+        def_line_count, snippet_lines,
+        "def_line_count should match full Def snippet line count even when max-lines is set"
+    );
+}
+
+#[test]
 fn cli_search_symbol_mixed_repo_auto_detects_all_languages() {
     let mut cmd = cargo_bin_cmd!("symgrep");
     cmd.args([
@@ -890,7 +1321,7 @@ fn cli_search_symbol_mixed_repo_auto_detects_all_languages() {
         "tests/fixtures/mixed_repo",
         "--mode",
         "symbol",
-        "--context",
+        "--view",
         "decl",
         "--format",
         "json",
@@ -947,7 +1378,7 @@ fn cli_search_symbol_mixed_repo_respects_language_filter() {
             language_flag,
             "--mode",
             "symbol",
-            "--context",
+            "--view",
             "decl",
             "--format",
             "json",
@@ -992,7 +1423,7 @@ fn cli_search_symbol_ts_auto_detection_matches_explicit_language() {
         "tests/fixtures/ts_js_repo/simple.ts",
         "--mode",
         "symbol",
-        "--context",
+        "--view",
         "decl",
         "--format",
         "json",
@@ -1012,7 +1443,7 @@ fn cli_search_symbol_ts_auto_detection_matches_explicit_language() {
         "typescript",
         "--mode",
         "symbol",
-        "--context",
+        "--view",
         "decl",
         "--format",
         "json",
@@ -1038,7 +1469,7 @@ fn cli_search_symbol_mixed_repo_supports_query_dsl_name_and_kind() {
         "tests/fixtures/mixed_repo",
         "--mode",
         "symbol",
-        "--context",
+        "--view",
         "decl",
         "--format",
         "json",
@@ -1069,7 +1500,7 @@ fn cli_search_symbol_mixed_repo_add_decl_matches_snapshot() {
         "tests/fixtures/mixed_repo",
         "--mode",
         "symbol",
-        "--context",
+        "--view",
         "decl",
         "--format",
         "json",
@@ -1099,7 +1530,7 @@ fn cli_search_symbol_mixed_repo_parent_context_exposes_parent_chain() {
         "tests/fixtures/mixed_repo",
         "--mode",
         "symbol",
-        "--context",
+        "--view",
         "parent",
         "--format",
         "json",
@@ -1160,7 +1591,7 @@ fn cli_search_symbol_cpp_parent_context_includes_namespace_and_class() {
         "cpp",
         "--mode",
         "symbol",
-        "--context",
+        "--view",
         "parent",
         "--format",
         "json",
@@ -1221,7 +1652,7 @@ fn cli_search_symbol_cpp_parent_context_matches_snapshot() {
         "cpp",
         "--mode",
         "symbol",
-        "--context",
+        "--view",
         "parent",
         "--format",
         "json",
@@ -1250,7 +1681,372 @@ fn cli_schema_version_flag_prints_current_version() {
     let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8");
 
     assert!(
-        output.contains("0.1.0"),
-        "schema version output should include 0.1.0"
+        output.contains("1.2.0"),
+        "schema version output should include 1.2.0"
+    );
+}
+
+#[test]
+fn cli_search_symbol_comment_field_matches_doc_comments() {
+    let mut cmd = cargo_bin_cmd!("symgrep");
+    cmd.args([
+        "search",
+        "comment:Adds",
+        "--path",
+        "tests/fixtures/ts_js_repo",
+        "--language",
+        "typescript",
+        "--mode",
+        "symbol",
+        "--view",
+        "decl",
+        "--format",
+        "json",
+    ]);
+
+    let assert = cmd.assert().success();
+    let value: Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("valid json output");
+
+    let symbols = value["symbols"].as_array().expect("symbols array");
+    assert!(
+        !symbols.is_empty(),
+        "expected at least one symbol for comment: query"
+    );
+    assert!(
+        symbols
+            .iter()
+            .all(|s| s["name"] == "addWithDoc"),
+        "expected only addWithDoc symbols for comment: query"
+    );
+}
+
+#[test]
+fn cli_search_symbol_view_decl_comment_shows_signature_and_comment() {
+    let mut cmd = cargo_bin_cmd!("symgrep");
+    cmd.args([
+        "search",
+        "name:addWithDoc kind:function",
+        "--path",
+        "tests/fixtures/ts_js_repo",
+        "--language",
+        "typescript",
+        "--mode",
+        "symbol",
+        "--view",
+        "decl,comment",
+        "--format",
+        "text",
+    ]);
+
+    let assert = cmd.assert().success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8");
+
+    assert!(
+        output.contains("tests/fixtures/ts_js_repo/doc_comments.ts"),
+        "expected header for doc_comments.ts"
+    );
+    assert!(
+        output.contains("export function addWithDoc"),
+        "expected declaration line in output"
+    );
+    assert!(
+        output.contains("/**"),
+        "expected original doc comment delimiter in output"
+    );
+
+    let idx_comment = output
+        .find("/**")
+        .expect("expected comment block to be present");
+    let idx_decl = output
+        .find("export function addWithDoc")
+        .expect("expected declaration to be present");
+    assert!(
+        idx_comment < idx_decl,
+        "expected comment block to appear before declaration in output"
+    );
+}
+
+#[test]
+fn cli_search_symbol_view_def_matches_shows_matching_lines_only() {
+    let mut cmd = cargo_bin_cmd!("symgrep");
+    cmd.args([
+        "search",
+        "name:increment kind:method content:delta",
+        "--path",
+        "tests/fixtures/cpp_repo",
+        "--language",
+        "cpp",
+        "--mode",
+        "symbol",
+        "--view",
+        "def,matches",
+        "--format",
+        "text",
+    ]);
+
+    let assert = cmd.assert().success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8");
+
+    // Ensure the matching line is present and uses a simple `line:  code`
+    // prefix without an extra column offset.
+    assert!(
+        output.contains("return value + delta;"),
+        "expected matching line for content:delta"
+    );
+    assert!(
+        output
+            .lines()
+            .filter(|line| line.contains("return value + delta;"))
+            .all(|line| !line.contains(":1:") && !line.contains(":2:") && !line.contains(":3:")
+                && !line.contains(":4:") && !line.contains(":5:") && !line.contains(":6:")
+                && !line.contains(":7:") && !line.contains(":8:") && !line.contains(":9:")),
+        "expected def,matches snippet lines to omit column offsets"
+    );
+    assert!(
+        !output.contains("struct Widget {"),
+        "def,matches view should not print enclosing struct body"
+    );
+}
+
+#[test]
+fn cli_search_symbol_def_matches_with_context_prints_match_context() {
+    let mut cmd = cargo_bin_cmd!("symgrep");
+    cmd.args([
+        "search",
+        "name:increment kind:method content:delta",
+        "--path",
+        "tests/fixtures/cpp_repo",
+        "--language",
+        "cpp",
+        "--mode",
+        "symbol",
+        "--view",
+        "def,matches",
+        "--format",
+        "text",
+        "--context",
+        "1",
+    ]);
+
+    let assert = cmd.assert().success();
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8");
+
+    assert!(
+        output.contains("int increment(int delta) {"),
+        "expected context line for increment body"
+    );
+    assert!(
+        output.contains("return value + delta;"),
+        "expected matching line for content:delta"
+    );
+    assert!(
+        !output.contains("struct Widget {"),
+        "def,matches context should not include enclosing struct when using --context"
+    );
+}
+
+#[test]
+fn cli_search_symbol_ts_call_metadata_populates_calls_and_called_by() {
+    let mut cmd = cargo_bin_cmd!("symgrep");
+    cmd.args([
+        "search",
+        "kind:function",
+        "--path",
+        "tests/fixtures/call_graph_repo/ts_calls.ts",
+        "--language",
+        "typescript",
+        "--mode",
+        "symbol",
+        "--view",
+        "meta",
+        "--format",
+        "json",
+    ]);
+
+    let assert = cmd.assert().success();
+    let value: Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("valid json output");
+
+    let symbols = value["symbols"].as_array().expect("symbols array");
+    assert_eq!(symbols.len(), 4, "expected four functions in ts_calls.ts");
+
+    let foo = symbols
+        .iter()
+        .find(|s| s["name"] == "foo")
+        .expect("foo symbol");
+    let bar = symbols
+        .iter()
+        .find(|s| s["name"] == "bar")
+        .expect("bar symbol");
+    let baz = symbols
+        .iter()
+        .find(|s| s["name"] == "baz")
+        .expect("baz symbol");
+    let qux = symbols
+        .iter()
+        .find(|s| s["name"] == "qux")
+        .expect("qux symbol");
+
+    let foo_calls = foo["calls"].as_array().expect("foo.calls array");
+    let foo_call_names: Vec<&str> = foo_calls
+        .iter()
+        .map(|c| c["name"].as_str().expect("call name"))
+        .collect();
+    assert!(
+        foo_call_names.contains(&"bar") && foo_call_names.contains(&"baz"),
+        "expected foo.calls to contain bar and baz, got {:?}",
+        foo_call_names
+    );
+
+    let bar_called_by = bar["called_by"]
+        .as_array()
+        .expect("bar.called_by array");
+    let bar_caller_names: Vec<&str> = bar_called_by
+        .iter()
+        .map(|c| c["name"].as_str().expect("caller name"))
+        .collect();
+    assert!(
+        bar_caller_names.contains(&"foo"),
+        "expected bar.called_by to contain foo, got {:?}",
+        bar_caller_names
+    );
+
+    let baz_called_by = baz["called_by"]
+        .as_array()
+        .expect("baz.called_by array");
+    let baz_caller_names: Vec<&str> = baz_called_by
+        .iter()
+        .map(|c| c["name"].as_str().expect("caller name"))
+        .collect();
+    assert!(
+        baz_caller_names.contains(&"foo"),
+        "expected baz.called_by to contain foo, got {:?}",
+        baz_caller_names
+    );
+
+    let qux_calls = qux["calls"].as_array().expect("qux.calls array");
+    let qux_call_names: Vec<&str> = qux_calls
+        .iter()
+        .map(|c| c["name"].as_str().expect("call name"))
+        .collect();
+    assert!(
+        qux_call_names.contains(&"foo"),
+        "expected qux.calls to contain foo, got {:?}",
+        qux_call_names
+    );
+
+    let foo_called_by = foo["called_by"]
+        .as_array()
+        .expect("foo.called_by array");
+    let foo_caller_names: Vec<&str> = foo_called_by
+        .iter()
+        .map(|c| c["name"].as_str().expect("caller name"))
+        .collect();
+    assert!(
+        foo_caller_names.contains(&"qux"),
+        "expected foo.called_by to contain qux, got {:?}",
+        foo_caller_names
+    );
+}
+
+#[test]
+fn cli_search_symbol_ts_calls_and_called_by_filters() {
+    // calls:foo should return the caller qux.
+    let mut cmd_calls = cargo_bin_cmd!("symgrep");
+    cmd_calls.args([
+        "search",
+        "calls:foo",
+        "--path",
+        "tests/fixtures/call_graph_repo/ts_calls.ts",
+        "--language",
+        "typescript",
+        "--mode",
+        "symbol",
+        "--view",
+        "meta",
+        "--format",
+        "json",
+    ]);
+
+    let assert_calls = cmd_calls.assert().success();
+    let value_calls: Value =
+        serde_json::from_slice(&assert_calls.get_output().stdout).expect("valid json output");
+
+    let symbols_calls = value_calls["symbols"].as_array().expect("symbols array");
+    assert_eq!(
+        symbols_calls.len(),
+        1,
+        "expected exactly one symbol for calls:foo"
+    );
+    assert_eq!(symbols_calls[0]["name"], "qux");
+
+    // called-by:foo should return the callees bar and baz.
+    let mut cmd_called_by = cargo_bin_cmd!("symgrep");
+    cmd_called_by.args([
+        "search",
+        "called-by:foo",
+        "--path",
+        "tests/fixtures/call_graph_repo/ts_calls.ts",
+        "--language",
+        "typescript",
+        "--mode",
+        "symbol",
+        "--view",
+        "meta",
+        "--format",
+        "json",
+    ]);
+
+    let assert_called_by = cmd_called_by.assert().success();
+    let value_called_by: Value = serde_json::from_slice(&assert_called_by.get_output().stdout)
+        .expect("valid json output");
+
+    let symbols_called_by = value_called_by["symbols"]
+        .as_array()
+        .expect("symbols array");
+    assert_eq!(
+        symbols_called_by.len(),
+        2,
+        "expected exactly two symbols for called-by:foo"
+    );
+
+    let mut names: Vec<&str> = symbols_called_by
+        .iter()
+        .map(|s| s["name"].as_str().expect("name string"))
+        .collect();
+    names.sort();
+    assert_eq!(names, vec!["bar", "baz"]);
+
+    // callers:foo should behave like called-by:foo.
+    let mut cmd_callers = cargo_bin_cmd!("symgrep");
+    cmd_callers.args([
+        "search",
+        "callers:foo",
+        "--path",
+        "tests/fixtures/call_graph_repo/ts_calls.ts",
+        "--language",
+        "typescript",
+        "--mode",
+        "symbol",
+        "--view",
+        "meta",
+        "--format",
+        "json",
+    ]);
+
+    let assert_callers = cmd_callers.assert().success();
+    let value_callers: Value =
+        serde_json::from_slice(&assert_callers.get_output().stdout).expect("valid json output");
+
+    let symbols_callers = value_callers["symbols"].as_array().expect("symbols array");
+    let mut caller_names: Vec<&str> = symbols_callers
+        .iter()
+        .map(|s| s["name"].as_str().expect("name string"))
+        .collect();
+    caller_names.sort();
+    assert_eq!(
+        caller_names, names,
+        "callers:foo should return the same symbols as called-by:foo"
     );
 }

@@ -4,8 +4,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use crate::cli::args::{ContextArg, IndexBackendArg, OutputFormat, SearchModeArg};
-use crate::cli::{IndexArgs, IndexInfoArgs, SearchArgs, ServeArgs};
+use crate::cli::args::{
+    FollowDirectionArg, IndexBackendArg, OutputFormat, SearchModeArg, SymbolViewArg,
+};
+use crate::cli::{AnnotateArgs, FollowArgs, IndexArgs, IndexInfoArgs, SearchArgs, ServeArgs};
 
 /// Top-level representation of `.symgrep/config.toml`.
 #[derive(Debug, Default, Deserialize)]
@@ -21,6 +23,9 @@ pub struct CliConfig {
 
     #[serde(default)]
     pub serve: Option<ServeSection>,
+
+    #[serde(default)]
+    pub follow: Option<FollowSection>,
 
     #[serde(default)]
     pub http: Option<HttpSection>,
@@ -41,13 +46,17 @@ pub struct SearchSection {
     #[serde(default)]
     pub mode: Option<SearchModeArg>,
     #[serde(default)]
-    pub context: Option<ContextArg>,
+    pub view: Option<Vec<SymbolViewArg>>,
     #[serde(default)]
     pub limit: Option<usize>,
     #[serde(default)]
     pub max_lines: Option<usize>,
     #[serde(default)]
+    pub context: Option<usize>,
+    #[serde(default)]
     pub use_index: Option<bool>,
+    #[serde(default)]
+    pub reindex_on_search: Option<bool>,
     #[serde(default)]
     pub index_backend: Option<IndexBackendArg>,
     #[serde(default)]
@@ -106,6 +115,34 @@ pub struct IndexInfoSection {
 pub struct ServeSection {
     #[serde(default)]
     pub addr: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct FollowSection {
+    #[serde(default)]
+    pub paths: Vec<PathBuf>,
+    #[serde(default)]
+    pub globs: Vec<String>,
+    #[serde(default, alias = "exclude")]
+    pub exclude_globs: Vec<String>,
+    #[serde(default)]
+    pub language: Option<String>,
+    #[serde(default)]
+    pub literal: Option<bool>,
+    #[serde(default)]
+    pub direction: Option<FollowDirectionArg>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub max_lines: Option<usize>,
+    #[serde(default)]
+    pub context: Option<usize>,
+    #[serde(default)]
+    pub format: Option<OutputFormat>,
+    #[serde(default)]
+    pub server: Option<String>,
+    #[serde(default)]
+    pub no_server: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -180,15 +217,20 @@ pub fn apply_search_config_defaults(config: &CliConfig, args: &mut SearchArgs) {
             }
         }
 
+        // Apply config mode only when CLI mode is still at its default value (Text).
+        // This allows config to set a project-wide mode while CLI --mode always overrides.
         if matches!(args.mode, SearchModeArg::Text) {
             if let Some(mode) = search.mode {
                 args.mode = mode;
             }
         }
 
-        if matches!(args.context, ContextArg::None) {
-            if let Some(context) = search.context {
-                args.context = context;
+        // Apply config view only for non-text modes (Symbol and Auto).
+        // Auto mode may resolve to Symbol at runtime, so we treat it as symbol-capable.
+        // CLI --view always overrides when explicitly provided (args.view non-empty).
+        if args.view.is_empty() && !matches!(args.mode, SearchModeArg::Text) {
+            if let Some(view) = &search.view {
+                args.view = view.clone();
             }
         }
 
@@ -204,9 +246,21 @@ pub fn apply_search_config_defaults(config: &CliConfig, args: &mut SearchArgs) {
             }
         }
 
+        if args.context.is_none() {
+            if let Some(context) = search.context {
+                args.context = Some(context);
+            }
+        }
+
         if !args.use_index {
             if let Some(true) = search.use_index {
                 args.use_index = true;
+            }
+        }
+
+        if !args.reindex_on_search {
+            if let Some(true) = search.reindex_on_search {
+                args.reindex_on_search = true;
             }
         }
 
@@ -251,6 +305,187 @@ pub fn apply_search_config_defaults(config: &CliConfig, args: &mut SearchArgs) {
                 args.server = Some(url.clone());
             }
         }
+    }
+}
+
+pub fn apply_follow_config_defaults(config: &CliConfig, args: &mut FollowArgs) {
+    if let Some(follow) = &config.follow {
+        if args.paths.is_empty() && !follow.paths.is_empty() {
+            args.paths = follow.paths.clone();
+        }
+
+        if args.globs.is_empty() && !follow.globs.is_empty() {
+            args.globs = follow.globs.clone();
+        }
+
+        if args.exclude_globs.is_empty() && !follow.exclude_globs.is_empty() {
+            args.exclude_globs = follow.exclude_globs.clone();
+        }
+
+        if args.language.is_none() {
+            if let Some(language) = &follow.language {
+                args.language = Some(language.clone());
+            }
+        }
+
+        if !args.literal {
+            if let Some(true) = follow.literal {
+                args.literal = true;
+            }
+        }
+
+        if args.limit.is_none() {
+            if let Some(limit) = follow.limit {
+                args.limit = Some(limit);
+            }
+        }
+
+        if matches!(args.direction, FollowDirectionArg::Callers) {
+            if let Some(direction) = follow.direction {
+                args.direction = direction;
+            }
+        }
+
+        if args.max_lines.is_none() {
+            if let Some(max_lines) = follow.max_lines {
+                args.max_lines = Some(max_lines);
+            }
+        }
+
+        if args.context.is_none() {
+            if let Some(context) = follow.context {
+                args.context = Some(context);
+            }
+        }
+
+        if matches!(args.format, OutputFormat::Text) {
+            if let Some(format) = follow.format {
+                args.format = format;
+            }
+        }
+
+        if args.server.is_none() {
+            if let Some(server) = &follow.server {
+                args.server = Some(server.clone());
+            } else if let Some(http) = &config.http {
+                if let Some(url) = &http.server_url {
+                    args.server = Some(url.clone());
+                }
+            }
+        }
+
+        if !args.no_server {
+            if let Some(true) = follow.no_server {
+                args.no_server = true;
+            }
+        }
+    } else if args.server.is_none() {
+        if let Some(http) = &config.http {
+            if let Some(url) = &http.server_url {
+                args.server = Some(url.clone());
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::args::{OutputFormat, SearchArgs};
+
+    fn empty_search_args_with_mode(mode: SearchModeArg) -> SearchArgs {
+        SearchArgs {
+            pattern: "foo".to_string(),
+            paths: Vec::new(),
+            globs: Vec::new(),
+            exclude_globs: Vec::new(),
+            language: None,
+            literal: false,
+            mode,
+            view: Vec::new(),
+            limit: None,
+            max_lines: None,
+            context: None,
+            use_index: false,
+            reindex_on_search: false,
+            index_backend: None,
+            index_path: None,
+            format: OutputFormat::Text,
+            server: None,
+            no_server: false,
+        }
+    }
+
+    #[test]
+    fn search_config_applies_view_for_symbol_mode() {
+        let config = CliConfig {
+            search: Some(SearchSection {
+                view: Some(vec![SymbolViewArg::Def, SymbolViewArg::Matches]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let mut args = empty_search_args_with_mode(SearchModeArg::Symbol);
+
+        apply_search_config_defaults(&config, &mut args);
+
+        assert_eq!(
+            args.view,
+            vec![SymbolViewArg::Def, SymbolViewArg::Matches]
+        );
+    }
+
+    #[test]
+    fn search_config_does_not_apply_view_in_text_mode() {
+        let config = CliConfig {
+            search: Some(SearchSection {
+                view: Some(vec![SymbolViewArg::Def]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let mut args = empty_search_args_with_mode(SearchModeArg::Text);
+
+        apply_search_config_defaults(&config, &mut args);
+
+        assert!(args.view.is_empty());
+    }
+
+    #[test]
+    fn search_config_respects_cli_view_override() {
+        let config = CliConfig {
+            search: Some(SearchSection {
+                view: Some(vec![SymbolViewArg::Def]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let mut args = empty_search_args_with_mode(SearchModeArg::Symbol);
+        args.view = vec![SymbolViewArg::Decl];
+
+        apply_search_config_defaults(&config, &mut args);
+
+        assert_eq!(args.view, vec![SymbolViewArg::Decl]);
+    }
+
+    #[test]
+    fn search_config_applies_reindex_on_search_flag() {
+        let config = CliConfig {
+            search: Some(SearchSection {
+                reindex_on_search: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let mut args = empty_search_args_with_mode(SearchModeArg::Symbol);
+
+        apply_search_config_defaults(&config, &mut args);
+
+        assert!(args.reindex_on_search);
     }
 }
 
@@ -377,6 +612,16 @@ pub fn apply_serve_config_defaults(config: &CliConfig, args: &mut ServeArgs) {
         if args.addr == "127.0.0.1:7878" {
             if let Some(addr) = &serve.addr {
                 args.addr = addr.clone();
+            }
+        }
+    }
+}
+
+pub fn apply_annotate_config_defaults(config: &CliConfig, args: &mut AnnotateArgs) {
+    if args.server.is_none() {
+        if let Some(http) = &config.http {
+            if let Some(url) = &http.server_url {
+                args.server = Some(url.clone());
             }
         }
     }

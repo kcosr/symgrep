@@ -25,7 +25,10 @@ use axum::{
 use serde::Serialize;
 use tokio::net::TcpListener;
 
-use crate::models::{IndexConfig, IndexSummary, SearchConfig, SearchResult};
+use crate::models::{
+    IndexConfig, IndexSummary, SearchConfig, SearchResult, SymbolAttributesRequest,
+    SymbolAttributesResponse,
+};
 use crate::search::engine;
 
 /// Simple health-check response payload.
@@ -97,6 +100,7 @@ pub fn router() -> Router {
         .route("/v1/search", post(search))
         .route("/v1/index", post(index))
         .route("/v1/index/info", post(index_info))
+        .route("/v1/symbol/attributes", post(symbol_attributes))
 }
 
 /// Run the HTTP server bound to the provided socket address.
@@ -135,6 +139,13 @@ async fn index_info(Json(config): Json<IndexConfig>) -> Result<Json<IndexSummary
     Ok(Json(summary))
 }
 
+async fn symbol_attributes(
+    Json(request): Json<SymbolAttributesRequest>,
+) -> Result<Json<SymbolAttributesResponse>, ApiError> {
+    let response = crate::index::update_symbol_attributes(request).map_err(ApiError::from)?;
+    Ok(Json(response))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,11 +168,12 @@ mod tests {
             language: None,
             mode: crate::models::SearchMode::Text,
             literal: false,
-            context: crate::models::SearchContext::None,
+            reindex_on_search: false,
             limit: None,
             max_lines: None,
-            index: None,
             query_expr: None,
+            index: None,
+            symbol_views: Vec::new(),
         };
 
         let Json(result) = search(Json(config)).await.expect("search result");
@@ -243,6 +255,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn symbol_attributes_endpoint_updates_symbol_attributes() {
+        use crate::models::{IndexBackendKind, SymbolAttributesUpdate, SymbolKind, SymbolSelector};
+        use tempfile::tempdir;
+
+        let tmp = tempdir().expect("tempdir");
+        let repo_root = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo_root).expect("create repo root");
+
+        let file_path = repo_root.join("sample.ts");
+        std::fs::write(
+            &file_path,
+            "export function add(a: number, b: number): number { return a + b; }",
+        )
+        .expect("write sample");
+
+        let index_root = tmp.path().join(".symgrep");
+
+        let index_config = IndexConfig {
+            paths: vec![repo_root.clone()],
+            globs: Vec::new(),
+            exclude_globs: Vec::new(),
+            backend: IndexBackendKind::File,
+            index_path: index_root,
+            language: Some("typescript".to_string()),
+        };
+
+        // Build the index once using the core engine.
+        let _ = engine::run_index(index_config.clone()).expect("index summary");
+
+        let selector = SymbolSelector {
+            file: file_path,
+            language: "typescript".to_string(),
+            kind: SymbolKind::Function,
+            name: "add".to_string(),
+            start_line: 1,
+            end_line: 1,
+        };
+
+        let attributes = SymbolAttributesUpdate {
+            keywords: vec!["auth".to_string(), "login".to_string()],
+            description: Some("Performs user authentication and issues JWTs".to_string()),
+        };
+
+        let request = SymbolAttributesRequest {
+            index: index_config,
+            selector,
+            attributes,
+        };
+
+        let Json(response) = symbol_attributes(Json(request))
+            .await
+            .expect("attributes response");
+
+        let attrs = response.symbol.attributes.expect("attributes");
+        assert_eq!(attrs.keywords, vec!["auth".to_string(), "login".to_string()]);
+        assert_eq!(
+            attrs.description.as_deref(),
+            Some("Performs user authentication and issues JWTs")
+        );
+    }
+
+    #[tokio::test]
     async fn error_responses_are_returned_as_json() {
         // Use a non-existent path to trigger an error in the engine.
         let config = SearchConfig {
@@ -253,11 +327,12 @@ mod tests {
             language: None,
             mode: crate::models::SearchMode::Text,
             literal: false,
-            context: crate::models::SearchContext::None,
+            reindex_on_search: false,
             limit: None,
             max_lines: None,
-            index: None,
             query_expr: None,
+            index: None,
+            symbol_views: Vec::new(),
         };
 
         let err = search(Json(config)).await.expect_err("expected error");

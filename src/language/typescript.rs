@@ -4,10 +4,12 @@ use tree_sitter::{Node, Parser, TreeCursor};
 use tree_sitter_typescript::{LANGUAGE_TSX, LANGUAGE_TYPESCRIPT};
 
 use crate::language::{
-    context_snippet_for_range, file_context_node, find_symbol_node, node_text_range, BackendError,
-    BackendResult, LanguageBackend, ParsedFile,
+    collect_leading_comment, context_snippet_for_range, file_context_node, find_symbol_node,
+    node_text_range, BackendError, BackendResult, LanguageBackend, ParsedFile,
 };
-use crate::models::{ContextInfo, ContextKind, Symbol, SymbolKind};
+use crate::models::{
+    CallRef, ContextInfo, ContextKind, Symbol, SymbolAttributes, SymbolKind,
+};
 
 /// Tree-sitter backed language implementation for TypeScript/TSX.
 pub struct TypeScriptBackend;
@@ -118,6 +120,15 @@ fn ts_visit_symbols(file: &ParsedFile, cursor: &mut TreeCursor, symbols: &mut Ve
                 // Skip non-top-level variables for now.
             } else if let Some(name) = ts_symbol_name(file, node) {
                 let range = node_text_range(&node);
+                let comment = collect_leading_comment(file.source(), range.start_line, |line| {
+                    line.trim_start().starts_with('@')
+                });
+                let attributes = comment.map(|(text, comment_range)| SymbolAttributes {
+                    comment: Some(text),
+                    comment_range: Some(comment_range),
+                    keywords: Vec::new(),
+                    description: None,
+                });
                 symbols.push(Symbol {
                     name,
                     kind,
@@ -125,6 +136,11 @@ fn ts_visit_symbols(file: &ParsedFile, cursor: &mut TreeCursor, symbols: &mut Ve
                     file: file.path.clone(),
                     range,
                     signature: None,
+                    attributes,
+                    def_line_count: None,
+                    matches: Vec::new(),
+                    calls: Vec::new(),
+                    called_by: Vec::new(),
                 });
             }
         }
@@ -136,6 +152,144 @@ fn ts_visit_symbols(file: &ParsedFile, cursor: &mut TreeCursor, symbols: &mut Ve
 
         if !cursor.goto_next_sibling() {
             break;
+        }
+    }
+}
+
+fn ts_enclosing_symbol_index(
+    symbols: &[Symbol],
+    file_path: &Path,
+    range: crate::models::TextRange,
+) -> Option<usize> {
+    let mut best: Option<(usize, u32)> = None;
+
+    for (idx, symbol) in symbols.iter().enumerate() {
+        if symbol.file != file_path {
+            continue;
+        }
+
+        if !matches!(symbol.kind, SymbolKind::Function | SymbolKind::Method) {
+            continue;
+        }
+
+        if symbol.range.start_line <= range.start_line && symbol.range.end_line >= range.end_line {
+            let span = symbol.range.end_line.saturating_sub(symbol.range.start_line);
+            match best {
+                None => best = Some((idx, span)),
+                Some((_, best_span)) => {
+                    if span <= best_span {
+                        best = Some((idx, span));
+                    }
+                }
+            }
+        }
+    }
+
+    best.map(|(idx, _)| idx)
+}
+
+fn ts_callee_name(file: &ParsedFile, call_node: Node) -> Option<String> {
+    let source = file.source();
+    let function = call_node.child_by_field_name("function")?;
+
+    match function.kind() {
+        "identifier" | "type_identifier" | "property_identifier" => {
+            function.utf8_text(source.as_bytes()).ok().map(|s| s.to_string())
+        }
+        "member_expression" => {
+            if let Some(prop) = function.child_by_field_name("property") {
+                return prop
+                    .utf8_text(source.as_bytes())
+                    .ok()
+                    .map(|s| s.to_string());
+            }
+
+            // Fallback: pick the last property/identifier child.
+            let mut cursor = function.walk();
+            let mut last_name: Option<String> = None;
+            for child in function.children(&mut cursor) {
+                if child.kind() == "property_identifier" || child.kind() == "identifier" {
+                    if let Ok(text) = child.utf8_text(source.as_bytes()) {
+                        last_name = Some(text.to_string());
+                    }
+                }
+            }
+            last_name
+        }
+        _ => None,
+    }
+}
+
+fn ts_attach_call_metadata(file: &ParsedFile, symbols: &mut [Symbol]) {
+    if symbols.is_empty() {
+        return;
+    }
+
+    for symbol in symbols.iter_mut() {
+        symbol.calls.clear();
+        symbol.called_by.clear();
+    }
+
+    let root = file.tree.root_node();
+    let mut cursor = root.walk();
+    let mut edges: Vec<(usize, String, u32)> = Vec::new();
+
+    fn visit(
+        file: &ParsedFile,
+        symbols: &[Symbol],
+        cursor: &mut TreeCursor,
+        edges: &mut Vec<(usize, String, u32)>,
+    ) {
+        loop {
+            let node = cursor.node();
+            if node.kind() == "call_expression" {
+                let range = crate::language::node_text_range(&node);
+                if let Some(caller_idx) =
+                    ts_enclosing_symbol_index(symbols, &file.path, range)
+                {
+                    if let Some(callee) = ts_callee_name(file, node) {
+                        edges.push((caller_idx, callee, range.start_line));
+                    }
+                }
+            }
+
+            if cursor.goto_first_child() {
+                visit(file, symbols, cursor, edges);
+                cursor.goto_parent();
+            }
+
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+
+    visit(file, symbols, &mut cursor, &mut edges);
+
+    for (caller_idx, callee_name, line) in edges {
+        if caller_idx >= symbols.len() {
+            continue;
+        }
+
+        let caller_name = symbols[caller_idx].name.clone();
+        let caller_file = symbols[caller_idx].file.clone();
+
+        symbols[caller_idx].calls.push(CallRef {
+            name: callee_name.clone(),
+            file: caller_file.clone(),
+            line: Some(line),
+            kind: None,
+        });
+
+        for symbol in symbols.iter_mut() {
+            if symbol.name == callee_name {
+                symbol.called_by.push(CallRef {
+                    name: caller_name.clone(),
+                    file: caller_file.clone(),
+                    line: Some(line),
+                    kind: None,
+                });
+            }
         }
     }
 }
@@ -224,6 +378,7 @@ impl LanguageBackend for TypeScriptBackend {
         let mut symbols = Vec::new();
         let mut cursor: TreeCursor = file.tree.root_node().walk();
         ts_visit_symbols(file, &mut cursor, &mut symbols);
+        ts_attach_call_metadata(file, &mut symbols);
         Ok(symbols)
     }
 

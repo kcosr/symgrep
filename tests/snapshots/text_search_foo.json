@@ -1,1 +1,1 @@
-{"version":"0.1.0","query":"foo","matches":[{"path":"tests/fixtures/text_repo/a.txt","line":1,"column":1,"snippet":"foo"},{"path":"tests/fixtures/text_repo/b.txt","line":2,"column":1,"snippet":"foo bar"}],"symbols":[],"contexts":[],"summary":{"total_matches":2,"truncated":false}}
+{"version":"1.2.0","query":"foo","matches":[{"path":"tests/fixtures/text_repo/a.txt","line":1,"column":1,"snippet":"foo"},{"path":"tests/fixtures/text_repo/b.txt","line":2,"column":1,"snippet":"foo bar"}],"symbols":[],"contexts":[],"summary":{"total_matches":2,"truncated":false}}

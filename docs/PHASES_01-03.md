@@ -130,7 +130,7 @@ The high-level architecture, guardrails, and scaffolding are defined in `IMPLEME
 6. **JSON output extensions**
    - Extend `SearchResult`:
      - Include `Symbol` and `ContextInfo` data where applicable.
-   - Ensure JSON output remains stable and versioned (e.g., `version: "0.1.0"`).
+   - Ensure JSON output remains stable and versioned (e.g., `version: "0.3.0"`).
 
 7. **Tests**
    - Unit tests:
@@ -144,7 +144,7 @@ The high-level architecture, guardrails, and scaffolding are defined in `IMPLEME
    - Keep using `cargo test` after each change.
 
 **Deliverable:**  
-`v0.2.0` – TS/JS symbol-aware search with declaration/definition context.
+`v0.3.0` – TS/JS symbol-aware search with declaration/definition context.
 
 ---
 
