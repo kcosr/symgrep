@@ -43,19 +43,22 @@ We follow standard Rust conventions with some additional directories for fixture
   src/
     main.rs / lib.rs
     ...
-    backend/
-      mod.rs          
-    query/
-      mod.rs          
 
   tests/              
     cli_search.rs     
     cli_index.rs      
-    backends.rs       
+    cli_follow.rs     
+    cli_server.rs     
+    cli_config.rs     
     fixtures/         
       ts_js_repo/
       cpp_repo/
       mixed_repo/
+      text_repo/
+      text_literal_repo/
+      symbol_literal_repo/
+      call_graph_repo/
+      rust_repo/
     snapshots/        
 
   docs/
@@ -116,8 +119,12 @@ Only update snapshots intentionally after reviewing diffs.
 - Utility function tests  
 
 ### 3.2 Integration Tests
-- `symgrep search` across fixtures  
-- `symgrep index` + `--use-index` parity checks  
+- `symgrep search` across fixtures (text, table, and JSON)  
+- `symgrep index` + `--use-index` parity checks, including both file and SQLite backends  
+- `symgrep index-info` text/JSON output for index metadata  
+- `symgrep follow` callers/callees exploration (JSON and text with context/max-lines)  
+- `symgrep serve` HTTP daemon behavior and parity with local CLI  
+- Config-driven behavior via `.symgrep/config.toml`  
 - Multi-language detection tests  
 
 ### 3.3 Snapshot Tests

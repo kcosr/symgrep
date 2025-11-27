@@ -163,6 +163,44 @@ fn cli_index_builds_sqlite_backend_layout() {
 }
 
 #[test]
+fn cli_index_prints_human_readable_summary() {
+    let (_tmp, repo_root) = copy_fixture_repo("ts_js_repo");
+    let db_path = repo_root.join(".symgrep").join("index.sqlite");
+
+    let mut cmd = cargo_bin_cmd!("symgrep");
+    cmd.current_dir(&repo_root);
+    cmd.args([
+        "index",
+        "--path",
+        ".",
+        "--index-backend",
+        "sqlite",
+        "--index-path",
+        db_path.to_str().unwrap(),
+    ]);
+
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+
+    assert!(
+        stdout.contains("Indexed "),
+        "expected summary line to mention 'Indexed', got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains(" files and "),
+        "expected summary line to mention file and symbol counts, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains(" symbols using "),
+        "expected summary line to mention backend kind, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains(" backend at "),
+        "expected summary line to mention index path, got:\n{stdout}"
+    );
+}
+
+#[test]
 fn cli_search_symbol_ts_with_index_matches_without_index() {
     let (tmp, repo_root) = copy_fixture_repo("ts_js_repo");
     let index_root = index_path_for(&tmp);

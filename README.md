@@ -109,6 +109,12 @@ The JSON schema (structure, fields, and versioning) is documented in
 symgrep --schema-version
 ```
 
+Example output:
+
+```text
+Search result JSON schema version: 1.2.0
+```
+
 ### 2. Symbol search with views
 
 Run a symbol-mode search over a small mixed-language fixture repo, returning
@@ -211,6 +217,12 @@ symgrep search "add" \
   --index-path target/symgrep/index.sqlite
 ```
 
+Example text output from `symgrep index`:
+
+```text
+Indexed 8 files and 8 symbols using Sqlite backend at target/symgrep/index.sqlite
+```
+
 Behavior notes:
 
 - Omitting `--use-index` runs directly on files (no index).
@@ -220,12 +232,42 @@ Behavior notes:
 - Indexed and non-indexed symbol searches are designed to be semantically
   equivalent; indexes only improve performance.
 
+To inspect an existing index without modifying it, use `symgrep index-info`:
+
+```bash
+symgrep index-info \
+  --path tests/fixtures/ts_js_repo \
+  --index-backend sqlite \
+  --index-path target/symgrep/index.sqlite \
+  --format text
+```
+
+Example text output:
+
+```text
+backend      : sqlite
+index_path   : target/symgrep/index.sqlite
+root_path    : /workspace/devtools/symgrep/tests/fixtures/ts_js_repo
+schema       : 2
+tool_version : 0.0.0
+created_at   : 2025-11-25T23:58:33Z
+updated_at   : 2025-11-25T23:58:33Z
+files        : 8
+symbols      : 8
+```
+
 ### 4. Daemon mode (`symgrep serve` + `--server`)
 
 Start a long-lived HTTP daemon:
 
 ```bash
 symgrep serve --addr 127.0.0.1:7878
+```
+
+CLI output:
+
+```text
+Starting symgrep HTTP server on http://127.0.0.1:7878
 ```
 
 In another shell, send search requests to the daemon:
