@@ -723,42 +723,26 @@ fn run_symbol_search_with_index(config: SearchConfig) -> Result<SearchResult> {
 ///
 /// Backend selection rules:
 /// - If `config.index` is `None`, indexing is disabled.
-/// - If an explicit backend and path have been configured (e.g.
-///   via `--index-backend` or a non-default `--index-path`),
-///   that backend is used as-is.
-/// - When `config.index` uses the default file backend at
-///   `.symgrep` (the CLI default when `--index-backend` is
-///   omitted), this is treated as "auto" selection:
-///   - Prefer an existing SQLite index at `.symgrep/index.sqlite`.
-///   - Else, use the file backend if `.symgrep/` exists.
-///   - Else, fall back to non-indexed search.
+/// - Otherwise, use the configured backend and path as-is.
+/// - If the configured index path does not exist, return `None` to
+///   fall back to non-indexed search.
 fn resolve_effective_index_config(config: &SearchConfig) -> Option<IndexConfig> {
     let index = match &config.index {
         Some(cfg) => cfg.clone(),
         None => return None,
     };
 
-    let default_root = std::path::PathBuf::from(".symgrep");
+    // Check if the index exists before using it.
+    let exists = match index.backend {
+        crate::models::IndexBackendKind::File => index.index_path.exists(),
+        crate::models::IndexBackendKind::Sqlite => index.index_path.exists(),
+    };
 
-    if index.backend == crate::models::IndexBackendKind::File && index.index_path == default_root {
-        let sqlite_path = default_root.join("index.sqlite");
-
-        if sqlite_path.exists() {
-            return Some(IndexConfig {
-                backend: crate::models::IndexBackendKind::Sqlite,
-                index_path: sqlite_path,
-                ..index
-            });
-        }
-
-        if default_root.exists() {
-            return Some(index);
-        }
-
-        return None;
+    if exists {
+        Some(index)
+    } else {
+        None
     }
-
-    Some(index)
 }
 
 fn is_identifier_char(ch: char) -> bool {

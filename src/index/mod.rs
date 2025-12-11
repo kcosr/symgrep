@@ -605,3 +605,29 @@ pub fn update_symbol_attributes(
         symbol: updated_symbol,
     })
 }
+
+#[cfg(test)]
+mod extra_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn symbol_attributes_from_extra_includes_keywords_and_description() {
+        let extra = Some(json!({
+            "comment": "Test comment",
+            "comment_range": {
+                "start_line": 1,
+                "start_column": 1,
+                "end_line": 2,
+                "end_column": 10
+            },
+            "keywords": ["auth", "jwt"],
+            "description": "Test description"
+        }));
+        
+        let attrs = symbol_attributes_from_extra(&extra).expect("should parse");
+        assert_eq!(attrs.comment, Some("Test comment".to_string()));
+        assert_eq!(attrs.keywords, vec!["auth", "jwt"]);
+        assert_eq!(attrs.description, Some("Test description".to_string()));
+    }
+}
